@@ -1,0 +1,19 @@
+# Ambientes virtuais e cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+env/
+venv/
+
+# Credenciais e segredos
+.env
+
+# Arquivos locais do projeto
+output/
+data/historico/
+*.pdf
+
+# Streamlit
+.streamlit/credentials.toml

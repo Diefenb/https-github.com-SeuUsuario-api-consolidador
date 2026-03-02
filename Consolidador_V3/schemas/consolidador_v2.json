@@ -1,0 +1,178 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "consolidador-v2",
+  "title": "Consolidador Schema v2",
+  "description": "Schema canônico para extração de relatórios de corretoras brasileiras",
+  "type": "object",
+  "required": ["meta", "resumo_carteira", "ativos"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "consolidador-v2"
+    },
+    "meta": {
+      "type": "object",
+      "required": ["cliente", "conta", "corretora", "data_referencia", "tipo_relatorio", "arquivo_origem"],
+      "properties": {
+        "cliente": { "type": "string", "description": "Nome completo do titular" },
+        "conta": { "type": "string", "description": "Número da conta" },
+        "corretora": { "type": "string", "enum": ["XP", "BTG", "C6"] },
+        "segmento": { "type": ["string", "null"], "description": "Signature, Exclusive, Private, etc." },
+        "parceiro": { "type": ["string", "null"], "description": "Nome do assessor/parceiro" },
+        "data_referencia": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "tipo_relatorio": { "type": "string", "enum": ["xp_performance", "btg_api_performance", "xp_posicao_consolidada"] },
+        "arquivo_origem": { "type": "string" }
+      }
+    },
+    "resumo_carteira": {
+      "type": "object",
+      "required": ["patrimonio_total_bruto"],
+      "properties": {
+        "patrimonio_total_bruto": { "type": "number" },
+        "rentabilidade_mes_pct": { "type": ["number", "null"] },
+        "ganho_mes_rs": { "type": ["number", "null"] },
+        "rentabilidade_ano_pct": { "type": ["number", "null"] },
+        "ganho_ano_rs": { "type": ["number", "null"] },
+        "rentabilidade_12m_pct": { "type": ["number", "null"] },
+        "rentabilidade_24m_pct": { "type": ["number", "null"] },
+        "ganho_24m_rs": { "type": ["number", "null"] },
+        "pct_cdi_mes": { "type": ["number", "null"] },
+        "pct_cdi_ano": { "type": ["number", "null"] },
+        "pct_cdi_12m": { "type": ["number", "null"] },
+        "pct_cdi_24m": { "type": ["number", "null"] },
+        "movimentacoes_mes_rs": { "type": ["number", "null"] },
+        "movimentacoes_ano_rs": { "type": ["number", "null"] },
+        "movimentacoes_12m_rs": { "type": ["number", "null"] }
+      }
+    },
+    "benchmarks": {
+      "type": "object",
+      "properties": {
+        "cdi":      { "$ref": "#/$defs/benchmark_periods" },
+        "ibovespa": { "$ref": "#/$defs/benchmark_periods" },
+        "ipca":     { "$ref": "#/$defs/benchmark_periods" },
+        "dolar":    { "$ref": "#/$defs/benchmark_periods" }
+      }
+    },
+    "estatistica_historica": {
+      "type": "object",
+      "properties": {
+        "meses_positivos": { "type": ["integer", "null"] },
+        "meses_negativos": { "type": ["integer", "null"] },
+        "retorno_mensal_max_pct": { "type": ["number", "null"] },
+        "retorno_mensal_min_pct": { "type": ["number", "null"] },
+        "meses_acima_cdi": { "type": ["integer", "null"] },
+        "meses_abaixo_cdi": { "type": ["integer", "null"] },
+        "volatilidade_12m_pct": { "type": ["number", "null"] },
+        "volatilidade_24m_pct": { "type": ["number", "null"] }
+      }
+    },
+    "composicao_por_estrategia": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["estrategia", "saldo_bruto", "pct_alocacao"],
+        "properties": {
+          "estrategia": { "type": "string" },
+          "saldo_bruto": { "type": "number" },
+          "pct_alocacao": { "type": "number" },
+          "rent_mes_pct": { "type": ["number", "null"] },
+          "rent_ano_pct": { "type": ["number", "null"] },
+          "rent_12m_pct": { "type": ["number", "null"] },
+          "rent_24m_pct": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "rentabilidade_historica_mensal": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ano", "meses"],
+        "properties": {
+          "ano": { "type": "integer" },
+          "meses": {
+            "type": "object",
+            "patternProperties": {
+              "^(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)$": {
+                "type": "object",
+                "properties": {
+                  "portfolio_pct": { "type": ["number", "null"] },
+                  "pct_cdi": { "type": ["number", "null"] }
+                }
+              }
+            }
+          },
+          "ano_pct": { "type": ["number", "null"] },
+          "acumulada_pct": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "evolucao_patrimonial": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["data", "patrimonio_final"],
+        "properties": {
+          "data": { "type": "string", "pattern": "^\\d{4}-\\d{2}$" },
+          "patrimonio_inicial": { "type": "number" },
+          "movimentacoes": { "type": "number" },
+          "ir": { "type": "number" },
+          "iof": { "type": "number" },
+          "patrimonio_final": { "type": "number" },
+          "ganho_financeiro": { "type": "number" },
+          "rentabilidade_pct": { "type": "number" },
+          "pct_cdi": { "type": "number" }
+        }
+      }
+    },
+    "ativos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["nome_original", "saldo_bruto"],
+        "properties": {
+          "nome_original": { "type": "string" },
+          "estrategia": { "type": "string" },
+          "saldo_bruto": { "type": "number" },
+          "quantidade": { "type": ["number", "null"] },
+          "pct_alocacao": { "type": "number" },
+          "rent_mes_pct": { "type": ["number", "null"] },
+          "pct_cdi_mes": { "type": ["number", "null"] },
+          "rent_ano_pct": { "type": ["number", "null"] },
+          "pct_cdi_ano": { "type": ["number", "null"] },
+          "rent_12m_pct": { "type": ["number", "null"] },
+          "pct_cdi_12m": { "type": ["number", "null"] },
+          "rent_24m_pct": { "type": ["number", "null"] },
+          "pct_cdi_24m": { "type": ["number", "null"] },
+          "rent_acumulada_pct": { "type": ["number", "null"] },
+          "pct_cdi_acumulada": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "movimentacoes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["data_mov", "historico", "valor"],
+        "properties": {
+          "data_mov": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "data_liq": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "historico": { "type": "string" },
+          "valor": { "type": "number" },
+          "saldo": { "type": ["number", "null"] }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "benchmark_periods": {
+      "type": "object",
+      "properties": {
+        "mes": { "type": ["number", "null"] },
+        "ano": { "type": ["number", "null"] },
+        "12m": { "type": ["number", "null"] },
+        "24m": { "type": ["number", "null"] }
+      }
+    }
+  }
+}

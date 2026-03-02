@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \":*)",
+      "Bash(ls -la \"C:/Users/Diefe/.gemini/antigravity/Consolidador/document_pdf \\(1\\).pdf\")",
+      "Bash(python consolidar.py --cliente \"Jose Mestrener\" --mes \"2026-01\" --pdfs dummy --skip-extract --output \"./output/consolidado_jose_2026-01.xlsx\" --verbose)",
+      "Bash(PYTHONIOENCODING=utf-8 python consolidar.py --cliente \"Jose Mestrener\" --mes \"2026-01\" --pdfs dummy --skip-extract --output \"./output/consolidado_jose_2026-01.xlsx\" --verbose)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c \":*)",
+      "Bash(PYTHONIOENCODING=utf-8 python consolidar.py --cliente \"Jose Mestrener\" --mes \"2026-01\" --pdfs dummy --skip-extract --output \"./output/consolidado_jose_2026-01_v2.xlsx\" --verbose)",
+      "Bash(PYTHONIOENCODING=utf-8 python consolidar.py --cliente \"Jose Mestrener\" --mes \"2026-01\" --pdfs ./output/extractions/*.json --output ./output/consolidado_jose_2026-01.xlsx --skip-extract)"
+    ]
+  }
+}

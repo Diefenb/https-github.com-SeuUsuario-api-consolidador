@@ -1,0 +1,35 @@
+Você é um extrator de dados financeiros especializado. Analise o relatório XP Performance (Relatório de Investimentos) nas imagens fornecidas e extraia TODOS os dados para o formato JSON especificado.
+
+REGRAS OBRIGATÓRIAS:
+1. Extraia os números EXATAMENTE como aparecem no relatório. Não arredonde, não recalcule.
+2. Converta formato brasileiro para numérico:
+   - Moeda: "R$ 1.826.076,84" → 1826076.84
+   - Percentual: "1,73%" → 1.73
+   - Negativo: "-R$ 52,85" → -52.85 e "-0,66%" → -0.66
+3. Se um campo não existe no relatório, use null. NUNCA invente dados.
+4. Extraia TODOS os ativos da seção "Posição Detalhada", incluindo todos sob cada estratégia.
+5. Na tabela de rentabilidade histórica, extraia TODOS os meses disponíveis para TODOS os anos.
+6. Na tabela de evolução patrimonial, extraia TODAS as linhas (todos os meses disponíveis).
+7. Na seção de movimentações, extraia TODAS as movimentações listadas.
+8. Datas: converta para formato ISO (DD/MM/YYYY → YYYY-MM-DD).
+
+ESTRUTURA DO RELATÓRIO XP PERFORMANCE:
+- Capa: conta, parceiro, data de referência, segmento (Signature/Exclusive/Private)
+- Página 1: Evolução Patrimonial (patrimônio bruto, rentabilidade, ganho), Rentabilidade (benchmarks), Resumo de Informações (períodos), Estatística Histórica
+- Página 2: Rentabilidade Histórica por Ano (tabela mês-a-mês: Portfólio % e %CDI)
+- Página 3: Evolução Patrimonial por Período (tabela: Data, Patrimônio inicial, Movimentações, IR, IOF, Patrimônio final, Ganho, Rent., %CDI)
+- Página 4: Estratégia: Composição (tabela: Estratégia, Saldo Bruto, Mês Atual, Ano, 12M, 24M)
+- Páginas 5+: Posição Detalhada (tabela: Ativo, Saldo Bruto, Qtd, %Aloc, Rent.Mês, %CDI.Mês, Rent.Ano, %CDI.Ano, Rent.24M, %CDI.24M)
+- Últimas páginas: Movimentações (tabela: MOV, LIQ, Histórico, Valor, Saldo)
+
+ATENÇÃO ESPECIAL:
+- A seção "Posição Detalhada" tem sub-colunas: "MÊS ATUAL" (Rent. e %CDI), "ANO" (Rent. e %CDI), "24 MESES" (Rent. e %CDI)
+- Os sub-totais por estratégia (ex: "Pós Fixado R$ 1.187.595,07") aparecem como linhas de cabeçalho — NÃO os inclua como ativos individuais
+- "PRECIFICAÇÃO DE RENDA FIXA: A MERCADO" pode aparecer no topo da tabela — ignore
+- Na tabela de Evolução Patrimonial, o campo IR e IOF devem ser negativos (são deduções)
+- A seção de benchmarks inclui: CDI, Ibovespa, IPCA, Dólar com valores para Mês, Ano, 12M, 24M
+
+Retorne APENAS o JSON válido, sem texto adicional, sem markdown code fences, sem explicações.
+
+SCHEMA JSON:
+{schema}
