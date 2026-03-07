@@ -11,8 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'Cons
 from consolidator import consolidate
 from normalizer import normalize
 from report_generator import generate_report
-from parsers.xp_performance import parse_xp_performance
-from parsers.btg_performance import parse_btg_performance
+from parsers import detect_and_parse, UnknownFormatError
 from importer import import_manual_json
 
 # Configuração da página
@@ -173,11 +172,8 @@ if submitted:
                     if ext == ".json":
                         parsed_data = import_manual_json(tmp_path)
                     elif ext == ".pdf":
-                        # Simplificação do roteamento: se tiver 'btg' no nome roda BTG
-                        if "btg" in file.name.lower():
-                            parsed_data = parse_btg_performance(tmp_path)
-                        else:
-                            parsed_data = parse_xp_performance(tmp_path)
+                        # Auto-detecção de formato pelo conteúdo do PDF
+                        parsed_data = detect_and_parse(tmp_path)
                     else:
                         raise ValueError("Formato de arquivo não suportado.")
                     
