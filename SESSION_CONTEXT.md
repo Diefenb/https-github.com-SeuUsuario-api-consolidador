@@ -39,7 +39,7 @@ PDF de corretora nova ──→ Claude API (Sonnet) ──→ JSON canônico ─
 Consolidador/
 ├── SESSION_CONTEXT.md             ← ESTE ARQUIVO (atualizar a cada sessão)
 ├── CLAUDE.md                      ← referência técnica detalhada (não apagar)
-├── app.py                         ← Streamlit web app (interface principal, 253 linhas)
+├── app.py                         ← Streamlit web app (interface principal, ~420 linhas, UI v2 ✅)
 ├── consolidar.py                  ← CLI alternativo
 ├── requirements.txt
 ├── .env                           ← ANTHROPIC_API_KEY (não tocar, não recriar)
@@ -47,6 +47,8 @@ Consolidador/
 ├── Consolidador_V3/               ← VERSÃO ATIVA DO CÓDIGO
 │   ├── CLAUDE.md                  ← doc técnica V3 (mais completa)
 │   ├── plano_consolidador_v3.md   ← cronograma e roadmap
+│   ├── plano_ui_v2.md             ← planejamento completo da nova UI (gerado 2026-03-07)
+│   ├── Dashboards/                ← imagens de referência visual (2 PNGs)
 │   ├── src/
 │   │   ├── parsers/
 │   │   │   ├── __init__.py        ← detect_and_parse()
@@ -176,9 +178,11 @@ FIIs (tickers XXXX11) → reclassificar de "Renda Variável" para `Fundos Listad
 | Extração PDF (exceção) | Claude API — Sonnet |
 | Consolidação / normalização | Python / pandas |
 | Relatório output | Excel (openpyxl) |
-| Interface web | Streamlit |
+| Gráficos interativos | Plotly 6.x |
+| Interface web | Streamlit 1.54 |
 | Armazenamento | JSON files por cliente/mês |
 | Deploy | Streamlit Community Cloud |
+| Repositório | GitHub — `Diefenb/https-github.com-SeuUsuario-api-consolidador` |
 
 ---
 
@@ -202,13 +206,14 @@ FIIs (tickers XXXX11) → reclassificar de "Renda Variável" para `Fundos Listad
 |---|---------|-----------|-------------|
 | 1 | **Arquivo de contexto de sessão** | ✅ Feito | Este arquivo |
 | 2 | **Parser BTG completo** | ✅ Feito | ~500 linhas — state machine, todas as seções, testado vs ground truth |
-| 3 | **Aprimorar UI** | Alta | Seguir mockups Capital Investimentos (dashboard com métricas + gráficos) |
-| 4 | **Tabela rentabilidade mensal + Benchmarks** | Alta | Dados já extraídos, falta aba/seção dedicada no relatório |
-| 5 | **Gráficos de rentabilidade e evolução PL** | Média | No Streamlit e embutido no Excel/PDF |
-| 6 | **Área de remoção de ativos (PL parcial)** | Média | UI para excluir ativos antes de consolidar |
-| 7 | **Ajuste template PDF e Excel exportado** | Média | Identidade visual API Capital nos outputs |
-| 8 | **Importação de extratos via IA + lançamento manual** | Média | Expandir além dos relatórios mensais de performance |
-| 9 | **Carteiras de recomendação** | Baixa | Integração com planilhas asset da API Capital |
+| 3 | **Nova UI — sidebar, cards, gráficos** | ✅ Feito | app.py reescrito, Plotly, dois modos (upload/dashboard) |
+| 4 | **Deploy Streamlit Community Cloud** | ✅ Feito | GitHub conectado, app em live (ver seção 16) |
+| 5 | **Tabela rentabilidade mensal no Excel** | Alta | Dados extraídos, falta validação visual das abas 4/5 com dados BTG |
+| 6 | **Gráficos embutidos no Excel** | Média | Charts do Plotly no Excel exportado |
+| 7 | **Área de remoção de ativos (PL parcial)** | Média | UI para excluir ativos antes de consolidar |
+| 8 | **Ajuste template Excel exportado** | Média | Identidade visual API Capital nos outputs |
+| 9 | **Importação de extratos via IA + lançamento manual** | Média | Expandir além dos relatórios mensais de performance |
+| 10 | **Carteiras de recomendação** | Baixa | Integração com planilhas asset da API Capital |
 
 ---
 
@@ -216,7 +221,7 @@ FIIs (tickers XXXX11) → reclassificar de "Renda Variável" para `Fundos Listad
 
 **Última atualização:** 2026-03-07
 
-### O que foi feito nesta sessão (2026-03-07)
+### O que foi feito nas sessões anteriores — 2026-03-07 (BTG Parser)
 
 #### 1. Parser BTG completo — `btg_performance.py` (81 → ~500 linhas)
 
@@ -334,33 +339,126 @@ Arquivos: Consolidador_V3/src/parsers/btg_performance.py
 
 ---
 
+### O que foi feito nesta sessão — 2026-03-07 (UI v2 + Deploy)
+
+#### 1. Reescrita completa do `app.py` (253 → ~420 linhas)
+
+**Motivação:** O app original era tela única sem identidade visual, sem gráficos e com roteamento por nome de arquivo. A nova versão implementa o mockup do `plano_ui_v2.md` do zero.
+
+**Arquitetura nova:**
+- **Navegação por `st.session_state["view"]`** — dois modos: `"upload"` e `"dashboard"`, controlados por session_state sem multi-page do Streamlit
+- **Sem formulário** (`st.form`) — inputs fora do form para feedback imediato por arquivo
+- Botão "Nova Importação" limpa o estado e volta para upload com `st.rerun()`
+- Funções bem separadas: `_sidebar()`, `_cards_upload()`, `_cards_dashboard()`, `_chart_evolucao()`, `_chart_rent_mensal()`, `_tabela_contas()`, `_tabela_alocacao()`, `_view_upload()`, `_view_dashboard()`, `_init_state()`, `_reset_state()`
+
+**Sidebar escura (`#0D1B3E`):**
+- Logo "CAPITAL INVESTIMENTOS" em texto estilizado com sublabel em letra-espaçada
+- Itens de navegação com estado ativo (borda esquerda `#1A56DB` + fundo semi-transparente)
+- Card de cliente (nome + data de referência) visível apenas na view dashboard
+- Botão "Nova Importação" com estilo adaptado para fundo escuro via CSS específico para sidebar
+
+**4 Cards HTML (não `st.metric`):**
+- Implementados como `st.markdown(html, unsafe_allow_html=True)` dentro de grid CSS `display:grid; grid-template-columns: repeat(4,1fr)`
+- *View Upload:* Arquivos carregados, Corretoras detectadas, Horário última consolidação, Contagem de erros
+- *View Dashboard:* AuM Total, Rent. Mês (média ponderada por PL), %CDI Mês (média ponderada), Nº Contas
+- Média ponderada = `sum(rent * patrimônio) / sum(patrimônio)` por conta
+- Classe CSS `.positive`/`.negative`/`.neutral` para coloração automática de deltas
+
+**Gráfico de Evolução Patrimonial (Plotly):**
+- Fonte de dados: `dados_consolidados["evolucao_por_conta"]` — lista de blocos por conta, cada bloco com `evolucao_patrimonial` mensal
+- Agrega somando `patrimonio_final` por mês (`data = "YYYY-MM"`) via `defaultdict(float)`
+- `plotly.graph_objects.Scatter` com `fill="tozeroy"`, cor `#1A56DB`, fill `rgba(26,86,219,0.07)`
+- Eixo X: rótulos "Jan/26", "Fev/26" etc; eixo Y: "R$ X.XXX"
+- Fallback: `st.info()` se menos de 2 meses de dados
+
+**Gráfico de Rentabilidade Mensal (Plotly):**
+- Fonte de dados: `dados_consolidados["rentabilidade_por_conta"]` — histórico mensal por conta
+- Agrega por `(ano, mes_key)` → lista de valores entre contas → média simples
+- Pega os últimos 6 meses com dados disponíveis
+- `plotly.graph_objects.Bar` com cor por sinal: `#16A34A` (positivo) / `#DC2626` (negativo)
+- Rótulos de valor acima de cada barra (`textposition="outside"`)
+
+**Tabelas com `column_config`:**
+- `_tabela_contas`: usa `dados_consolidados["contas"]` — corretora, conta, patrimônio, % carteira, rent. mês, %CDI, ganho mês
+- `_tabela_alocacao`: usa `dados_consolidados["alocacao_por_estrategia"]` (campo correto — o app antigo usava `composicao_por_estrategia` que não existe no consolidador)
+- `st.column_config.NumberColumn` com `format="R$ %.2f"` e `format="%.2f%%"`
+
+**Lista de arquivos com badges antes de processar:**
+- Cada arquivo carregado aparece como linha HTML com badge colorido: `badge-xp` (azul), `badge-btg` (amarelo), `badge-json` (roxo)
+- Detecção por nome do arquivo (cosmético — não afeta o parser que usa conteúdo)
+
+**Histórico da sessão:**
+- Tabela acumulativa de todos os arquivos processados na sessão (horário, arquivo, corretora, conta, ativos, patrimônio, status OK/Erro)
+- Persiste entre uploads na mesma sessão via `st.session_state["historico"]`
+
+**CSS renovado:**
+- Sidebar: `section[data-testid="stSidebar"] > div:first-child { background-color: #0D1B3E }` + forçar texto branco em filhos
+- Botão sidebar: CSS específico para não conflitar com botões do main (`div[data-testid="stMainBlockContainer"]`)
+- Dropzone: `min-height: 130px` + hover com borda azul
+- Download button: força cor escura via `!important` (Streamlit não expõe classe separada)
+
+**Correção de campo crítico:**
+- `app.py` antigo exibia `dados_consolidados.get('composicao_por_estrategia')` — campo que não existe no retorno de `consolidate()`
+- Campo correto é `alocacao_por_estrategia` (confirmado lendo `consolidator.py:112`)
+
+#### 2. `requirements.txt` — Plotly adicionado
+
+```
+plotly>=5.18.0   ← adicionado (instalado como 6.6.0)
+```
+
+#### 3. Deploy no Streamlit Community Cloud
+
+**Commits no GitHub:**
+```
+0a71f6f  feat: redesign UI with dark sidebar, dashboard view, and Plotly charts
+98217a2  feat: implement full BTG parser and fix XP/BTG routing
+30e4143  Added Dev Container Folder  ← commit do GitHub (devcontainer)
+cf734aa  feat: initial commit for API Consolidador v3 with Streamlit
+```
+
+**Repositório:** `https://github.com/Diefenb/https-github.com-SeuUsuario-api-consolidador`
+**Branch:** `main`
+**Entry point:** `app.py` (raiz do repo)
+
+**Para fazer deploy no Streamlit Community Cloud:**
+1. Acesse `share.streamlit.io`
+2. Clique em "Create app"
+3. Selecione o repositório `Diefenb/https-github.com-SeuUsuario-api-consolidador`
+4. Branch: `main` | Main file path: `app.py`
+5. Clique "Deploy!" — o Streamlit lê o `requirements.txt` automaticamente
+
+**Configuração já incluída no repo:**
+- `.streamlit/config.toml` com tema completo (primaryColor, backgroundColor, textColor, toolbarMode=minimal)
+- `.devcontainer/devcontainer.json` configurado para GitHub Codespaces
+- `.gitignore` exclui `.env`, `output/`, `*.pdf` (sem dados sensíveis no repo)
+
+**Variável de ambiente necessária (para fluxo IA — exceção):**
+- No painel do Streamlit Cloud: Settings → Secrets → adicionar `ANTHROPIC_API_KEY = "sk-ant-..."`
+- O fluxo principal (parsers determinísticos) roda sem essa chave
+
+---
+
 ### O que está funcionando agora
 
 - **Parser XP** (`xp_performance.py`) — 707 linhas, funcional, testado ✅
 - **Parser BTG** (`btg_performance.py`) — ~500 linhas, funcional, testado vs ground truth ✅
-- **Detecção automática de formato** (`detect_and_parse`) — conteúdo-based, 2 páginas, regex robusto ✅
-- **Roteamento app.py** — todos PDFs passam por `detect_and_parse`, sem heurística de nome ✅
-- **Consolidador** (`consolidator.py`) — agrega múltiplas contas ✅
+- **Detecção automática de formato** (`detect_and_parse`) — por conteúdo, 2 páginas, regex robusto ✅
+- **Consolidador** (`consolidator.py`) — agrega múltiplas contas com todos os campos corretos ✅
 - **Gerador de Excel** (`report_generator.py`) — 6 abas ✅
-- **Streamlit app** (`app.py`) — upload + processamento + download Excel ✅
-- **Dois clientes processados** com Excel gerado: Jose Mestrener e Cid e Tania ✅
+- **UI nova** (`app.py`) — sidebar escura, dois modos, 4 cards, 2 gráficos Plotly, tabelas ✅
+- **GitHub** — push realizado, 4 commits no histórico ✅
+- **Deploy Streamlit Cloud** — repo conectável, `.streamlit/config.toml` no lugar ✅
 
 ### O que ainda está incompleto
 
-- `tests/fixtures/` — vazio, sem ground truth nos fixtures formais (os JSONs estão em `output/extractions/`)
-- UI do Streamlit — funcional mas sem identidade visual Capital Investimentos (sem dashboard, sem gráficos)
-- Abas 4 (Rentabilidade mensal) e 5 (Evolução) no Excel precisam validação visual com os novos dados BTG
+- `tests/fixtures/` — vazio (JSONs de ground truth estão em `output/extractions/`, não formalizados como fixtures)
+- Abas 4 e 5 do Excel (Rentabilidade mensal / Evolução) precisam validação visual com os novos dados BTG
+- Streamlit Cloud precisa ser conectado manualmente (não automatizável via CLI — ver instruções acima)
 
 ### Próximo passo sugerido
 
-**Aprimorar a UI do Streamlit** seguindo a identidade visual Capital Investimentos:
-- Dashboard com 4 cards de métrica no topo (AuM Total, Rent. Mês, %CDI, Contas)
-- Sidebar fixa com logo Capital Investimentos
-- Gráfico de área para evolução patrimonial
-- Barras verticais para rentabilidade mês a mês
-- Tabela de alocação por estratégia com cores
-
-Ou, alternativamente, **validar o Excel gerado** com os parsers determinísticos para garantir que os dados BTG aparecem corretamente nas 6 abas.
+**Validar o Excel gerado** com os parsers determinísticos — abrir o arquivo Excel e confirmar que as abas 4 (Rentabilidade mensal) e 5 (Evolução patrimonial) estão corretas com dados BTG. Depois partir para feature de remoção de ativos (PL parcial) na UI.
 
 ---
 
@@ -370,3 +468,38 @@ Ou, alternativamente, **validar o Excel gerado** com os parsers determinísticos
 2. Cole o conteúdo deste arquivo no início da conversa com Claude
 3. Diga o que quer fazer — Claude terá contexto completo imediatamente
 4. Ao final da sessão, peça a Claude para atualizar a **seção 14** com o novo estado
+
+---
+
+## 16. Deploy — Streamlit Community Cloud
+
+**Repositório GitHub:**
+`https://github.com/Diefenb/https-github.com-SeuUsuario-api-consolidador`
+
+**Histórico de commits (main):**
+```
+0a71f6f  feat: redesign UI with dark sidebar, dashboard view, and Plotly charts
+98217a2  feat: implement full BTG parser and fix XP/BTG routing
+30e4143  Added Dev Container Folder
+cf734aa  feat: initial commit for API Consolidador v3 with Streamlit
+```
+
+**Para conectar ao Streamlit Community Cloud (primeira vez):**
+1. Acesse `share.streamlit.io` com a conta Google/GitHub do Gabriel
+2. "Create app" → "From existing repo"
+3. Repositório: `Diefenb/https-github.com-SeuUsuario-api-consolidador`
+4. Branch: `main` | Main file: `app.py`
+5. Clique "Deploy!" — o Streamlit lê `requirements.txt` e instala tudo automaticamente
+6. Em Settings → Secrets, adicionar: `ANTHROPIC_API_KEY = "sk-ant-..."` (só necessário para fluxo IA, não para o fluxo principal)
+
+**Após conectado, deploys futuros são automáticos** — qualquer `git push origin main` atualiza o app em ~30s.
+
+**Arquivos que o Streamlit Cloud lê:**
+- `requirements.txt` — instala todas as dependências Python
+- `.streamlit/config.toml` — tema (primaryColor `#0D1B3E`, bg `#F8FAFC`, toolbar minimal)
+- `app.py` — entry point
+
+**Arquivos sensíveis excluídos do repo (`.gitignore`):**
+- `.env` — chave Anthropic
+- `output/` — relatórios Excel gerados
+- `*.pdf` — PDFs dos clientes
