@@ -1,249 +1,954 @@
+"""
+Consolidador de Carteiras — Capital Investimentos
+Interface Streamlit — fluxo: Upload → Processar → Dashboard
+"""
+
 import os
 import sys
 import tempfile
 import traceback
-import streamlit as st
+from collections import defaultdict
 from datetime import datetime
 
-# Adicionar a pasta Consolidador_V3/src no path para importar os módulos
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'Consolidador_V3', 'src')))
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+# ── Path dos módulos internos ─────────────────────────────────────────────────
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "Consolidador_V3", "src")))
 
 from consolidator import consolidate
-from normalizer import normalize
-from report_generator import generate_report
-from parsers import detect_and_parse, UnknownFormatError
 from importer import import_manual_json
+from normalizer import normalize
+from parsers import UnknownFormatError, detect_and_parse
+from report_generator import generate_report
 
-# Configuração da página
-st.set_page_config(
-    page_title="API Consolidador",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
-# Estilos Customizados (CSS Injetado)
-CSS_INJECT = """
+# =============================================================================
+# DESIGN TOKENS
+# =============================================================================
+
+_C = {
+    "sidebar":       "#0D1B3E",
+    "accent":        "#1A56DB",
+    "bg":            "#F8FAFC",
+    "card":          "#FFFFFF",
+    "border":        "#E2E8F0",
+    "text":          "#0F172A",
+    "text_sub":      "#475569",
+    "text_muted":    "#94A3B8",
+    "positive":      "#16A34A",
+    "negative":      "#DC2626",
+    "neutral":       "#64748B",
+    "chart_line":    "#1A56DB",
+    "chart_fill":    "rgba(26,86,219,0.07)",
+    "chart_cdi":     "#94A3B8",
+    "chart_grid":    "#F1F5F9",
+}
+
+_MESES_ABR = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+               "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+_MESES_KEY = ["jan", "fev", "mar", "abr", "mai", "jun",
+               "jul", "ago", "set", "out", "nov", "dez"]
+
+
+# =============================================================================
+# CSS
+# =============================================================================
+
+_CSS = f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-html, body, [class*="st-"] {
+html, body, [class*="st-"] {{
     font-family: 'Inter', sans-serif;
     font-variant-numeric: tabular-nums;
-}
+}}
+.stApp {{ background-color: {_C['bg']}; }}
 
-.stApp {
-    background-color: #F8FAFC;
-}
+/* ── Sidebar escura ── */
+section[data-testid="stSidebar"] > div:first-child {{
+    background-color: {_C['sidebar']};
+    border-right: none;
+}}
+section[data-testid="stSidebar"] .stMarkdown p,
+section[data-testid="stSidebar"] .stMarkdown span,
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] div[data-testid="stText"] {{
+    color: #CBD5E1 !important;
+}}
+section[data-testid="stSidebar"] hr {{
+    border-color: rgba(255,255,255,0.10) !important;
+    margin: 10px 0;
+}}
+section[data-testid="stSidebar"] div[data-testid="stButton"] button {{
+    background: rgba(255,255,255,0.08);
+    color: #E2E8F0;
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    width: 100%;
+    transition: background 0.15s;
+}}
+section[data-testid="stSidebar"] div[data-testid="stButton"] button:hover {{
+    background: rgba(255,255,255,0.15);
+    color: #FFFFFF;
+    border-color: rgba(255,255,255,0.25);
+}}
 
-div[data-testid="stExpander"], div[data-testid="stMetric"], div.card {
-    background-color: #FFFFFF;
-    border: 1px solid #E2E8F0;
+/* ── Logo ── */
+.sidebar-logo {{
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    color: #FFFFFF;
+    line-height: 1.3;
+    padding: 6px 0 2px 0;
+}}
+.sidebar-logo small {{
+    display: block;
+    font-size: 9px;
+    font-weight: 400;
+    letter-spacing: 2.8px;
+    color: {_C['text_muted']};
+    margin-top: 3px;
+}}
+
+/* ── Nav items ── */
+.nav-item {{
+    padding: 9px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #94A3B8;
+    margin-bottom: 3px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    border-left: 3px solid transparent;
+}}
+.nav-item.active {{
+    background: rgba(255,255,255,0.10);
+    border-left-color: {_C['accent']};
+    color: #FFFFFF;
+}}
+
+/* ── Card cliente sidebar ── */
+.sidebar-client {{
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.10);
     border-radius: 8px;
-    box-shadow: 0px 1px 3px rgba(15, 23, 42, 0.05);
-    padding: 16px;
-    margin-bottom: 16px;
-}
-
-div[data-testid="stMetricValue"] {
-    color: #0D1B3E;
+    padding: 12px 14px;
+    margin: 4px 0;
+}}
+.sidebar-client .cl-label {{
+    font-size: 10px;
+    letter-spacing: 1.2px;
+    color: {_C['text_muted']};
+    text-transform: uppercase;
+    margin-bottom: 5px;
+}}
+.sidebar-client .cl-name {{
+    font-size: 13px;
     font-weight: 600;
-    font-size: 28px;
-}
+    color: #E2E8F0;
+    margin-bottom: 2px;
+}}
+.sidebar-client .cl-date {{
+    font-size: 11px;
+    color: {_C['text_muted']};
+}}
 
-div[data-testid="stMetricDelta"] svg {
-    display: none;
-}
+/* ── Cards de métrica ── */
+.cards-grid {{
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+}}
+.metric-card {{
+    background: {_C['card']};
+    border: 1px solid {_C['border']};
+    border-radius: 10px;
+    padding: 20px 22px;
+    box-shadow: 0 1px 3px rgba(15,23,42,0.05);
+}}
+.metric-label {{
+    font-size: 11px;
+    font-weight: 500;
+    color: {_C['neutral']};
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    margin-bottom: 10px;
+}}
+.metric-value {{
+    font-size: 24px;
+    font-weight: 600;
+    color: {_C['text']};
+    line-height: 1.1;
+    margin-bottom: 5px;
+}}
+.metric-delta {{
+    font-size: 12px;
+    font-weight: 500;
+}}
+.metric-delta.positive {{ color: {_C['positive']}; }}
+.metric-delta.negative {{ color: {_C['negative']}; }}
+.metric-delta.neutral  {{ color: {_C['neutral']}; }}
 
-section[data-testid="stFileUploadDropzone"] {
-    background-color: #FFFFFF;
+/* ── Títulos de seção ── */
+.section-title {{
+    font-size: 13px;
+    font-weight: 600;
+    color: {_C['text']};
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid {_C['border']};
+}}
+
+/* ── Badges ── */
+.badge {{
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    line-height: 1.6;
+}}
+.badge-xp   {{ background: #DBEAFE; color: #1E40AF; }}
+.badge-btg  {{ background: #FEF3C7; color: #92400E; }}
+.badge-json {{ background: #F3E8FF; color: #6B21A8; }}
+.badge-ok   {{ background: #DCFCE7; color: #166534; }}
+.badge-err  {{ background: #FEE2E2; color: #991B1B; }}
+
+/* ── Linha de arquivo ── */
+.file-row {{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: {_C['card']};
+    border: 1px solid {_C['border']};
+    border-radius: 7px;
+    margin-bottom: 6px;
+    font-size: 13px;
+    color: #374151;
+}}
+.file-row .fname {{ flex: 1; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+
+/* ── Dropzone maior ── */
+section[data-testid="stFileUploadDropzone"] {{
+    background: {_C['card']};
     border: 2px dashed #CBD5E1;
-    border-radius: 8px;
+    border-radius: 10px;
+    min-height: 130px;
     transition: all 0.2s ease;
-}
-section[data-testid="stFileUploadDropzone"]:hover {
-    border-color: #1A56DB;
-    background-color: #EFF6FF;
-}
+}}
+section[data-testid="stFileUploadDropzone"]:hover {{
+    border-color: {_C['accent']};
+    background: #EFF6FF;
+}}
 
-div[data-testid="stButton"] button[kind="primary"] {
-    background-color: #0D1B3E;
+/* ── Botão primário ── */
+div[data-testid="stButton"] button[kind="primary"] {{
+    background-color: {_C['sidebar']};
     color: #FFFFFF;
     border: none;
     border-radius: 6px;
     font-weight: 500;
-    padding: 0.5rem 1rem;
-    transition: all 0.2s ease;
-}
-div[data-testid="stButton"] button[kind="primary"]:hover {
-    background-color: #1A56DB;
-    box-shadow: 0 4px 6px -1px rgba(26, 86, 219, 0.1);
-}
+    font-size: 14px;
+    padding: 0.5rem 1.5rem;
+    transition: background 0.2s;
+}}
+div[data-testid="stButton"] button[kind="primary"]:hover {{
+    background-color: {_C['accent']};
+}}
 
-div[data-testid="stButton"] button[kind="secondary"] {
-    background-color: transparent;
-    color: #0D1B3E;
+/* ── Botão secundário (fora da sidebar) ── */
+div[data-testid="stMainBlockContainer"] div[data-testid="stButton"] button[kind="secondary"] {{
+    background: transparent;
+    color: {_C['sidebar']};
     border: 1px solid #CBD5E1;
     border-radius: 6px;
     font-weight: 500;
-}
-div[data-testid="stButton"] button[kind="secondary"]:hover {
-    background-color: #F8FAFC;
-    border-color: #0D1B3E;
-}
-
-div[data-testid="stDataFrame"] {
-    border: 1px solid #E2E8F0;
-    border-radius: 6px;
-    overflow: hidden;
-}
-
-section[data-testid="stSidebar"] {
-    background-color: #FFFFFF;
-    border-right: 1px solid #E2E8F0;
-}
-
-h1, h2, h3 {
-    color: #0F172A;
-}
-p.subtitle {
     font-size: 14px;
-    font-weight: 500;
-    color: #475569;
-    letter-spacing: 0.2px;
-}
+    transition: all 0.2s;
+}}
+div[data-testid="stMainBlockContainer"] div[data-testid="stButton"] button[kind="secondary"]:hover {{
+    background: {_C['bg']};
+    border-color: {_C['sidebar']};
+}}
+
+/* ── Download button ── */
+div[data-testid="stDownloadButton"] button {{
+    background-color: {_C['sidebar']} !important;
+    color: #FFFFFF !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-weight: 500 !important;
+    font-size: 14px !important;
+    transition: background 0.2s !important;
+}}
+div[data-testid="stDownloadButton"] button:hover {{
+    background-color: {_C['accent']} !important;
+}}
+
+/* ── DataFrame ── */
+div[data-testid="stDataFrame"] {{
+    border: 1px solid {_C['border']};
+    border-radius: 8px;
+    overflow: hidden;
+}}
+
+/* ── Alertas e feedback ── */
+div[data-testid="stAlert"] {{ border-radius: 8px; font-size: 14px; }}
+
+/* ── Padding superior ── */
+div[data-testid="stAppViewContainer"] > section > div:first-child {{ padding-top: 1.5rem; }}
 </style>
 """
-st.markdown(CSS_INJECT, unsafe_allow_html=True)
 
-# Barra Lateral
-with st.sidebar:
-    st.markdown("### 📊 API Consolidador")
-    st.markdown("<p class='subtitle'>Versão Interna - API Capital</p>", unsafe_allow_html=True)
-    st.divider()
-    st.markdown("**Instruções:**")
-    st.markdown("1. Preencha o nome do cliente.")
-    st.markdown("2. Selecione a data de referência.")
-    st.markdown("3. Faça upload dos relatórios em PDF (XP/BTG) ou dados extraídos (JSON).")
-    st.markdown("4. Clique em **Consolidar Carteiras**.")
 
-# Título Principal
-st.title("Consolidador de Carteiras")
-st.markdown("<p class='subtitle'>Integração de relatórios XP e geração de excel consolidado.</p>", unsafe_allow_html=True)
+# =============================================================================
+# FORMATAÇÃO
+# =============================================================================
 
-# Formulário de Entrada
-with st.form("upload_form"):
+def _brl(v) -> str:
+    if v is None:
+        return "—"
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _pct(v, sign=True) -> str:
+    if v is None:
+        return "—"
+    s = "+" if (v > 0 and sign) else ""
+    return f"{s}{v:.2f}%".replace(".", ",")
+
+
+def _cls(v) -> str:
+    if v is None:
+        return "neutral"
+    return "positive" if v > 0 else ("negative" if v < 0 else "neutral")
+
+
+# =============================================================================
+# SIDEBAR
+# =============================================================================
+
+def _sidebar():
+    view    = st.session_state.get("view", "upload")
+    cliente = st.session_state.get("cliente_nome", "")
+    data_r  = st.session_state.get("data_ref", "")
+
+    with st.sidebar:
+        st.markdown(
+            '<div class="sidebar-logo">CAPITAL<br>INVESTIMENTOS'
+            '<small>CONSOLIDADOR INTERNO</small></div>',
+            unsafe_allow_html=True,
+        )
+        st.divider()
+
+        u_cls = "nav-item active" if view == "upload"    else "nav-item"
+        d_cls = "nav-item active" if view == "dashboard" else "nav-item"
+        st.markdown(
+            f'<div class="{u_cls}">&#8679;&nbsp; Upload / Importação</div>'
+            f'<div class="{d_cls}">&#9635;&nbsp; Dashboard</div>',
+            unsafe_allow_html=True,
+        )
+
+        if view == "dashboard" and cliente:
+            st.divider()
+            st.markdown(
+                f'<div class="sidebar-client">'
+                f'<div class="cl-label">Cliente</div>'
+                f'<div class="cl-name">{cliente}</div>'
+                f'<div class="cl-date">{data_r}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("")
+            if st.button("&#8617; Nova Importação", use_container_width=True):
+                _reset_state()
+                st.rerun()
+
+
+# =============================================================================
+# CARDS DE MÉTRICA
+# =============================================================================
+
+def _cards_dashboard(dados):
+    contas = dados.get("contas", [])
+    total  = dados.get("patrimonio_total_consolidado", 0) or 0
+    n      = len(contas)
+
+    # Média ponderada por patrimônio
+    peso_total = sum(c.get("patrimonio_bruto") or 0 for c in contas)
+    if peso_total > 0:
+        rent_mes = sum((c.get("rentabilidade_mes_pct") or 0) * (c.get("patrimonio_bruto") or 0) for c in contas) / peso_total
+        pct_cdi  = sum((c.get("pct_cdi_mes") or 0) * (c.get("patrimonio_bruto") or 0) for c in contas) / peso_total
+    else:
+        rent_mes = pct_cdi = None
+
+    rc = _cls(rent_mes)
+    cc = _cls(pct_cdi)
+    cdi_txt = f"{pct_cdi:.0f}% do CDI" if pct_cdi is not None else "—"
+
+    st.markdown(f"""
+    <div class="cards-grid">
+      <div class="metric-card">
+        <div class="metric-label">AuM Total Consolidado</div>
+        <div class="metric-value">{_brl(total)}</div>
+        <div class="metric-delta neutral">{n} conta(s)</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Rentabilidade Bruta do Mês</div>
+        <div class="metric-value {rc}">{_pct(rent_mes)}</div>
+        <div class="metric-delta neutral">média pond. por PL</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">% CDI no Mês</div>
+        <div class="metric-value {cc}">{cdi_txt}</div>
+        <div class="metric-delta neutral">média pond. por PL</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Contas Consolidadas</div>
+        <div class="metric-value">{n}</div>
+        <div class="metric-delta neutral">XP + BTG</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def _cards_upload(uploaded_files, historico, erros):
+    n_arq  = len(uploaded_files) if uploaded_files else 0
+    n_err  = len(erros)
+    ultima = historico[-1]["horario"] if historico else "—"
+
+    corretoras = set()
+    for f in (uploaded_files or []):
+        n = f.name.lower()
+        if "relatorio" in n or "btg" in n:
+            corretoras.add("BTG")
+        elif "xperformance" in n or "xp" in n:
+            corretoras.add("XP")
+    n_corr = len(corretoras) if n_arq else 0
+
+    err_cor = _C["negative"] if n_err else _C["positive"]
+    err_txt = "sem erros" if not n_err else "atenção necessária"
+
+    st.markdown(f"""
+    <div class="cards-grid">
+      <div class="metric-card">
+        <div class="metric-label">Arquivos Carregados</div>
+        <div class="metric-value">{n_arq if n_arq else "—"}</div>
+        <div class="metric-delta neutral">prontos para processar</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Corretoras Detectadas</div>
+        <div class="metric-value">{n_corr if n_arq else "—"}</div>
+        <div class="metric-delta neutral">por nome de arquivo</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Última Consolidação</div>
+        <div class="metric-value" style="font-size:20px">{ultima}</div>
+        <div class="metric-delta neutral">nesta sessão</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Erros</div>
+        <div class="metric-value" style="color:{err_cor}">{n_err}</div>
+        <div class="metric-delta neutral">{err_txt}</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# =============================================================================
+# GRÁFICOS
+# =============================================================================
+
+def _chart_evolucao(dados):
+    """Gráfico de área: evolução patrimonial consolidada (soma das contas por mês)."""
+    evolucao_por_conta = dados.get("evolucao_por_conta", []) or []
+
+    soma = defaultdict(float)
+    for bloco in evolucao_por_conta:
+        for entry in bloco.get("evolucao_patrimonial", []) or []:
+            data = entry.get("data")
+            pf   = entry.get("patrimonio_final")
+            if data and pf is not None:
+                soma[data] += pf
+
+    if len(soma) < 2:
+        st.info("Dados insuficientes para o gráfico de evolução (mínimo 2 meses).")
+        return
+
+    datas   = sorted(soma.keys())
+    valores = [soma[d] for d in datas]
+
+    def _lbl(d):
+        try:
+            a, m = d.split("-")
+            return f"{_MESES_ABR[int(m) - 1]}/{a[2:]}"
+        except Exception:
+            return d
+
+    labels = [_lbl(d) for d in datas]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=labels,
+        y=valores,
+        mode="lines",
+        name="Carteira",
+        line=dict(color=_C["chart_line"], width=2.5),
+        fill="tozeroy",
+        fillcolor=_C["chart_fill"],
+        hovertemplate="%{x}<br><b>%{text}</b><extra></extra>",
+        text=[_brl(v) for v in valores],
+    ))
+    fig.update_layout(
+        height=280,
+        margin=dict(l=0, r=0, t=8, b=0),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        xaxis=dict(showgrid=False, tickfont=dict(size=11, color=_C["neutral"])),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor=_C["chart_grid"],
+            tickfont=dict(size=11, color=_C["neutral"]),
+            tickformat=",.0f",
+            tickprefix="R$ ",
+        ),
+        showlegend=False,
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _chart_rent_mensal(dados):
+    """Gráfico de barras: rentabilidade mensal — últimos 6 meses, média entre contas."""
+    rent_por_conta = dados.get("rentabilidade_por_conta", []) or []
+
+    # Agrega por (ano, mes_key) → lista de valores
+    agg = defaultdict(list)
+    for bloco in rent_por_conta:
+        for ano_bloco in bloco.get("rentabilidade_historica_mensal", []) or []:
+            ano   = ano_bloco.get("ano")
+            meses = ano_bloco.get("meses") or {}
+            for mk, mv in meses.items():
+                if mv and mv.get("portfolio_pct") is not None:
+                    agg[(ano, mk)].append(mv["portfolio_pct"])
+
+    if not agg:
+        st.info("Sem histórico mensal disponível.")
+        return
+
+    # Ordena e pega últimos 6
+    todos    = sorted(agg.keys(), key=lambda x: (x[0], _MESES_KEY.index(x[1]) if x[1] in _MESES_KEY else 99))
+    ultimos  = todos[-6:]
+    labels   = [f"{_MESES_ABR[_MESES_KEY.index(mk)] if mk in _MESES_KEY else mk}/{str(an)[2:]}" for an, mk in ultimos]
+    valores  = [round(sum(agg[k]) / len(agg[k]), 2) for k in ultimos]
+    cores    = [_C["positive"] if v >= 0 else _C["negative"] for v in valores]
+    textos   = [_pct(v) for v in valores]
+
+    fig = go.Figure(go.Bar(
+        x=labels,
+        y=valores,
+        marker_color=cores,
+        text=textos,
+        textposition="outside",
+        textfont=dict(size=11, color="#374151"),
+        hovertemplate="%{x}: %{text}<extra></extra>",
+    ))
+    fig.update_layout(
+        height=280,
+        margin=dict(l=0, r=0, t=24, b=0),
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        xaxis=dict(showgrid=False, tickfont=dict(size=11, color=_C["neutral"])),
+        yaxis=dict(showgrid=False, visible=False),
+        showlegend=False,
+        bargap=0.4,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+# =============================================================================
+# TABELAS
+# =============================================================================
+
+def _tabela_contas(dados):
+    contas = dados.get("contas", [])
+    if not contas:
+        return
+    total = dados.get("patrimonio_total_consolidado", 0) or 1
+
+    rows = []
+    for c in sorted(contas, key=lambda x: x.get("patrimonio_bruto") or 0, reverse=True):
+        pat = c.get("patrimonio_bruto") or 0
+        rows.append({
+            "Corretora":  c.get("corretora", "—"),
+            "Conta":      str(c.get("conta", "—")),
+            "Patrimônio": pat,
+            "% Carteira": round(pat / total * 100, 1) if total else None,
+            "Rent. Mês":  c.get("rentabilidade_mes_pct"),
+            "% CDI Mês":  c.get("pct_cdi_mes"),
+            "Ganho Mês":  c.get("ganho_mes_rs"),
+        })
+
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Patrimônio": st.column_config.NumberColumn("Patrimônio (R$)", format="R$ %.2f"),
+            "% Carteira": st.column_config.NumberColumn("% Carteira",     format="%.1f%%"),
+            "Rent. Mês":  st.column_config.NumberColumn("Rent. Mês (%)",  format="%.2f%%"),
+            "% CDI Mês":  st.column_config.NumberColumn("% CDI",          format="%.0f%%"),
+            "Ganho Mês":  st.column_config.NumberColumn("Ganho Mês (R$)", format="R$ %.2f"),
+        },
+    )
+
+
+def _tabela_alocacao(dados):
+    comp  = dados.get("alocacao_por_estrategia", []) or []
+    total = dados.get("patrimonio_total_consolidado", 0) or 1
+
+    if not comp:
+        return
+
+    rows = []
+    for item in comp:
+        saldo = item.get("saldo_bruto") or 0
+        rows.append({
+            "Estratégia": item.get("estrategia", "—"),
+            "Saldo (R$)": saldo,
+            "% Carteira": round(saldo / total * 100, 1),
+        })
+
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Saldo (R$)": st.column_config.NumberColumn("Saldo (R$)", format="R$ %.2f"),
+            "% Carteira": st.column_config.NumberColumn("% Carteira", format="%.1f%%"),
+        },
+    )
+
+
+# =============================================================================
+# PROCESSAMENTO
+# =============================================================================
+
+def _processar_arquivos(uploaded_files):
+    relatorios = []
+    historico  = []
+    erros      = []
+    n          = len(uploaded_files)
+
+    progress = st.progress(0, text="Iniciando...")
+    for i, file in enumerate(uploaded_files):
+        progress.progress(i / n, text=f"Processando {file.name}…")
+        tmp_path = None
+        try:
+            ext = os.path.splitext(file.name)[1].lower()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                tmp.write(file.getbuffer())
+                tmp_path = tmp.name
+
+            if ext == ".json":
+                parsed = import_manual_json(tmp_path)
+            elif ext == ".pdf":
+                parsed = detect_and_parse(tmp_path)
+            else:
+                raise ValueError(f"Formato não suportado: {ext}")
+
+            norm = normalize(parsed)
+            relatorios.append(norm)
+
+            meta = norm.get("meta", {})
+            historico.append({
+                "horario":   datetime.now().strftime("%H:%M"),
+                "arquivo":   file.name,
+                "corretora": meta.get("corretora", "—"),
+                "conta":     str(meta.get("conta", "—")),
+                "ativos":    len(norm.get("ativos", [])),
+                "patrimonio": norm.get("resumo_carteira", {}).get("patrimonio_total_bruto"),
+                "status":    "ok",
+            })
+
+        except Exception as e:
+            erros.append((file.name, str(e)))
+            historico.append({
+                "horario": datetime.now().strftime("%H:%M"),
+                "arquivo": file.name, "corretora": "—", "conta": "—",
+                "ativos": 0, "patrimonio": None, "status": "erro",
+            })
+            traceback.print_exc()
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    progress.progress(1.0, text="Concluído.")
+    return relatorios, historico, erros
+
+
+# =============================================================================
+# VIEW: UPLOAD
+# =============================================================================
+
+def _view_upload():
+    st.title("Upload / Importação")
+    st.markdown(
+        "<p style='font-size:14px;color:#475569;margin-top:-12px'>"
+        "Carregue os relatórios PDF (XP / BTG) ou arquivos JSON.</p>",
+        unsafe_allow_html=True,
+    )
+
+    historico  = st.session_state.get("historico") or []
+    erros_sess = st.session_state.get("erros_sessao") or []
+
+    # ── Inputs ──────────────────────────────────────────────────────────────
     col1, col2 = st.columns([2, 1])
     with col1:
-        cliente_nome = st.text_input("Nome do Cliente", placeholder="Ex: João da Silva")
+        cliente_nome = st.text_input(
+            "Nome do Cliente",
+            key="input_cliente",
+            placeholder="Ex: João da Silva",
+        )
     with col2:
-        mes_atual = datetime.now().strftime("%m/%Y")
-        data_ref = st.text_input("Mês/Ano de Referência", value=mes_atual)
-    
+        data_ref = st.text_input(
+            "Mês/Ano de Referência",
+            key="input_data",
+            value=st.session_state.get("data_ref") or datetime.now().strftime("%m/%Y"),
+        )
+
+    # ── Dropzone ─────────────────────────────────────────────────────────────
     uploaded_files = st.file_uploader(
-        "Arraste os arquivos das contas (PDFs XP/BTG ou estruturado JSON)", 
-        type=["pdf", "json"], 
-        accept_multiple_files=True
+        "Arraste e solte os arquivos",
+        type=["pdf", "json"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
     )
-    
-    submitted = st.form_submit_button("Consolidar Carteiras", type="primary")
 
-# Lógica de Processamento
-if submitted:
-    if not uploaded_files:
-        st.error("❌ Por favor, envie ao menos um relatório em PDF antes de consolidar.")
-    elif not cliente_nome.strip():
-        st.warning("⚠️ Insira o nome do cliente.")
-    else:
-        with st.spinner("⚙️ Processando arquivos..."):
-            relatorios_normalizados = []
-            erros = []
-            
-            # Para cada PDF
-            for file in uploaded_files:
-                try:
-                    # Salvar temporário para o parser ler
-                    ext = os.path.splitext(file.name)[1].lower()
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                        tmp.write(file.getbuffer())
-                        tmp_path = tmp.name
-                    
-                    # 1. Parsear o arquivo
-                    if ext == ".json":
-                        parsed_data = import_manual_json(tmp_path)
-                    elif ext == ".pdf":
-                        # Auto-detecção de formato pelo conteúdo do PDF
-                        parsed_data = detect_and_parse(tmp_path)
-                    else:
-                        raise ValueError("Formato de arquivo não suportado.")
-                    
-                    # 2. Normalizar o dado parsed
-                    norm_data = normalize(parsed_data)
-                    relatorios_normalizados.append(norm_data)
-                    
-                    os.unlink(tmp_path) # Cleanup
-                except Exception as e:
-                    erros.append((file.name, str(e)))
-                    traceback.print_exc()
+    # Lista de arquivos com badge de corretora
+    if uploaded_files:
+        st.markdown("**Arquivos prontos para processamento:**")
+        for f in uploaded_files:
+            n = f.name.lower()
+            if "relatorio" in n or "btg" in n:
+                badge = "<span class='badge badge-btg'>BTG</span>"
+            elif "xperformance" in n or "xp" in n:
+                badge = "<span class='badge badge-xp'>XP</span>"
+            elif n.endswith(".json"):
+                badge = "<span class='badge badge-json'>JSON</span>"
+            else:
+                badge = "<span class='badge badge-btg'>PDF</span>"
+            st.markdown(
+                f"<div class='file-row'>"
+                f"<span class='fname'>{f.name}</span>{badge}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown("")
 
-            if erros:
-                for nome_arq, err in erros:
-                    st.error(f"❌ Erro ao processar o arquivo **{nome_arq}**: {err}")
-            
-            if relatorios_normalizados:
-                st.success(f"✅ Sucesso! {len(relatorios_normalizados)} contas processadas.")
-                
+    # ── Cards de status ───────────────────────────────────────────────────────
+    _cards_upload(uploaded_files, historico, erros_sess)
+
+    # ── Botão de ação ─────────────────────────────────────────────────────────
+    col_btn, _ = st.columns([1, 3])
+    with col_btn:
+        processar = st.button("Consolidar Carteiras", type="primary", use_container_width=True)
+
+    if processar:
+        if not uploaded_files:
+            st.error("Carregue ao menos um arquivo PDF antes de continuar.")
+        elif not (cliente_nome or "").strip():
+            st.warning("Insira o nome do cliente.")
+        else:
+            with st.spinner("Processando arquivos…"):
+                relatorios, hist_novo, erros = _processar_arquivos(uploaded_files)
+
+            st.session_state["cliente_nome"] = (cliente_nome or "").strip()
+            st.session_state["data_ref"]     = data_ref
+            st.session_state["erros_sessao"] = erros
+            st.session_state["historico"]    = (st.session_state.get("historico") or []) + hist_novo
+
+            for nome_arq, err in erros:
+                st.error(f"Erro em **{nome_arq}**: {err}")
+
+            if relatorios:
                 try:
-                    # 3. Consolidar os dados
-                    dados_consolidados = consolidate(
-                        reports=relatorios_normalizados,
-                        cliente=cliente_nome,
-                        data_referencia=data_ref
+                    dados = consolidate(
+                        reports=relatorios,
+                        cliente=(cliente_nome or "").strip(),
+                        data_referencia=data_ref,
                     )
-                    
-                    # 4. Exibição na Interface
-                    st.markdown("### Resumo do Cliente")
-                    
-                    # Cards
-                    col_patrimonio, col_contas = st.columns(2)
-                    total_bruto = dados_consolidados.get('patrimonio_total_consolidado', 0)
-                    
-                    with col_patrimonio:
-                        st.metric(
-                            label="AuM Total Consolidado", 
-                            value=f"R$ {total_bruto:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                        )
-                    with col_contas:
-                        st.metric(label="Contas Processadas", value=len(dados_consolidados.get('contas', [])))
-                    
-                    # Tabela de contas
-                    st.markdown("#### Detalhamento por Conta")
-                    import pandas as pd
-                    contas_df = pd.DataFrame(dados_consolidados.get('contas', []))
-                    if not contas_df.empty:
-                        fmt_cols = ['patrimonio_bruto', 'rentabilidade_mes_pct', 'pct_cdi_mes']
-                        st.dataframe(
-                            contas_df[['corretora', 'conta', 'patrimonio_bruto', 'rentabilidade_mes_pct', 'pct_cdi_mes']], 
-                            use_container_width=True
-                        )
-                    
-                    # 5. Gerar Relatório Excel
-                    output_dir = os.path.join(os.path.dirname(__file__), 'output', 'relatorios')
+
+                    output_dir = os.path.join(os.path.dirname(__file__), "output", "relatorios")
                     os.makedirs(output_dir, exist_ok=True)
-                    excel_path = os.path.join(output_dir, f"Relatorio_{cliente_nome.replace(' ', '_')}.xlsx")
-                    
-                    generate_report(dados_consolidados, excel_path)
-                    
-                    with open(excel_path, "rb") as f:
-                        file_data = f.read()
-                    
-                    st.download_button(
-                        label="📥 Baixar Excel Consolidado",
-                        data=file_data,
-                        file_name=f"Consolidado_{cliente_nome.replace(' ', '_')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary"
+                    excel_path = os.path.join(
+                        output_dir,
+                        f"Relatorio_{(cliente_nome or '').strip().replace(' ', '_')}.xlsx",
                     )
+                    generate_report(dados, excel_path)
+                    with open(excel_path, "rb") as f:
+                        excel_bytes = f.read()
+
+                    st.session_state["dados_consolidados"] = dados
+                    st.session_state["excel_bytes"]        = excel_bytes
+                    st.session_state["excel_filename"]     = (
+                        f"Consolidado_{(cliente_nome or '').strip().replace(' ', '_')}.xlsx"
+                    )
+                    st.session_state["view"] = "dashboard"
+                    st.rerun()
+
                 except Exception as e:
-                    st.error(f"❌ Erro na consolidação ou geração do relatório: {e}")
+                    st.error(f"Erro na consolidação: {e}")
                     traceback.print_exc()
+
+    # ── Histórico da sessão ───────────────────────────────────────────────────
+    if historico:
+        st.divider()
+        st.markdown("<div class='section-title'>Histórico desta sessão</div>", unsafe_allow_html=True)
+        rows = []
+        for h in reversed(historico):
+            rows.append({
+                "Horário":    h["horario"],
+                "Arquivo":    h["arquivo"],
+                "Corretora":  h["corretora"],
+                "Conta":      h["conta"],
+                "Ativos":     h["ativos"],
+                "Patrimônio": h.get("patrimonio"),
+                "Status":     "OK" if h["status"] == "ok" else "Erro",
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Patrimônio": st.column_config.NumberColumn("Patrimônio (R$)", format="R$ %.2f"),
+            },
+        )
+
+
+# =============================================================================
+# VIEW: DASHBOARD
+# =============================================================================
+
+def _view_dashboard():
+    dados       = st.session_state["dados_consolidados"]
+    excel_bytes = st.session_state.get("excel_bytes")
+    excel_fname = st.session_state.get("excel_filename", "Consolidado.xlsx")
+    cliente     = st.session_state.get("cliente_nome", "")
+    data_ref    = st.session_state.get("data_ref", "")
+
+    st.title(f"Dashboard — {cliente}")
+    st.markdown(
+        f"<p style='font-size:14px;color:#475569;margin-top:-12px'>Referência: {data_ref}</p>",
+        unsafe_allow_html=True,
+    )
+
+    # ── 4 Cards ──────────────────────────────────────────────────────────────
+    _cards_dashboard(dados)
+
+    # ── Gráficos ─────────────────────────────────────────────────────────────
+    col_left, col_right = st.columns([2, 1])
+    with col_left:
+        st.markdown("<div class='section-title'>Evolução Patrimonial</div>", unsafe_allow_html=True)
+        _chart_evolucao(dados)
+
+    with col_right:
+        st.markdown("<div class='section-title'>Rentabilidade Mês a Mês</div>", unsafe_allow_html=True)
+        _chart_rent_mensal(dados)
+
+    st.divider()
+
+    # ── Tabelas ───────────────────────────────────────────────────────────────
+    col_t1, col_t2 = st.columns([3, 2])
+    with col_t1:
+        st.markdown("<div class='section-title'>Patrimônio por Conta</div>", unsafe_allow_html=True)
+        _tabela_contas(dados)
+
+    with col_t2:
+        st.markdown("<div class='section-title'>Alocação por Estratégia</div>", unsafe_allow_html=True)
+        _tabela_alocacao(dados)
+
+    st.divider()
+
+    # ── Ações ─────────────────────────────────────────────────────────────────
+    col_dl, col_nova, _ = st.columns([1, 1, 2])
+    with col_dl:
+        if excel_bytes:
+            st.download_button(
+                label="Download Excel",
+                data=excel_bytes,
+                file_name=excel_fname,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+    with col_nova:
+        if st.button("Nova Importação", type="secondary", use_container_width=True):
+            _reset_state()
+            st.rerun()
+
+
+# =============================================================================
+# UTILITÁRIOS DE ESTADO
+# =============================================================================
+
+def _reset_state():
+    for k in ("dados_consolidados", "excel_bytes", "excel_filename"):
+        st.session_state[k] = None
+    for k in ("historico", "erros_sessao"):
+        st.session_state[k] = []
+    st.session_state["view"] = "upload"
+
+
+def _init_state():
+    defaults = {
+        "view":                "upload",
+        "dados_consolidados":  None,
+        "excel_bytes":         None,
+        "excel_filename":      "Consolidado.xlsx",
+        "cliente_nome":        "",
+        "data_ref":            datetime.now().strftime("%m/%Y"),
+        "historico":           [],
+        "erros_sessao":        [],
+    }
+    for k, v in defaults.items():
+        st.session_state.setdefault(k, v)
+
+
+# =============================================================================
+# ENTRY POINT
+# =============================================================================
+
+def main():
+    st.set_page_config(
+        page_title="Consolidador — Capital Investimentos",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    st.markdown(_CSS, unsafe_allow_html=True)
+    _init_state()
+    _sidebar()
+
+    view = st.session_state.get("view", "upload")
+    if view == "dashboard" and st.session_state.get("dados_consolidados"):
+        _view_dashboard()
+    else:
+        _view_upload()
+
+
+if __name__ == "__main__":
+    main()
