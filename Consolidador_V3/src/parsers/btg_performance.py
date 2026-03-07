@@ -579,9 +579,11 @@ _PERF_START = re.compile(
 
 
 def _clean_asset_name(name: str) -> str:
-    """Remove fragmentos de taxa/vencimento após '|' do nome."""
+    """Remove fragmentos de taxa/vencimento após '|' e chars ilegais para XML/Excel."""
     if "|" in name:
         name = name[:name.index("|")]
+    # Remove null bytes e outros chars de controle ilegais em XML (openpyxl os rejeita)
+    name = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd\ufffe\uffff]", "", name)
     return name.strip()
 
 

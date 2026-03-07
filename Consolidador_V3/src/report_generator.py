@@ -11,11 +11,23 @@ Recebe dados consolidados e gera Excel com 6 abas:
 """
 
 import logging
+import re
 from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side, numbers
 from openpyxl.utils import get_column_letter
+
+# Chars ilegais em XML 1.0 que o openpyxl/Excel rejeita:
+# \x00-\x08, \x0b-\x0c, \x0e-\x1f, \ufffd, \ufffe, \uffff
+_ILLEGAL_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd\ufffe\uffff]")
+
+
+def _xls(v):
+    """Sanitiza valor para escrita em célula Excel: remove chars ilegais de strings."""
+    if isinstance(v, str):
+        return _ILLEGAL_XML.sub("", v)
+    return v
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +93,7 @@ def _write_data_row(ws, row, values, col_start=1, bold=False, is_total=False):
     fill = FILL_TOTAL if is_total else (FILL_ALTERNATING if row % 2 == 0 else None)
     
     for i, value in enumerate(values):
-        cell = ws.cell(row=row, column=col_start + i, value=value)
+        cell = ws.cell(row=row, column=col_start + i, value=_xls(value))
         cell.font = font
         if fill:
             cell.fill = fill
