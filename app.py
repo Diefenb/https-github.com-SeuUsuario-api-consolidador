@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # ── Path dos módulos internos ─────────────────────────────────────────────────
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "Consolidador_V3", "src")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "Consolidador_V3", "src")))
 
 from consolidator import consolidate
 from importer import import_manual_json
@@ -933,19 +933,22 @@ def _section_rentabilidade_diaria(dados: dict):
         st.info("Sem dados de evolução patrimonial para reconstrução diária.")
         return
 
+    _src = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "Consolidador_V3", "src"))
+    if _src not in sys.path:
+        sys.path.insert(0, _src)
+
     try:
-        from historico import reconstruct_daily
-    except ImportError:
-        st.warning("Módulo `historico` não encontrado. Verifique o caminho do sys.path.")
+        from historico import reconstruct_daily, reconstruct_from_assets
+    except Exception as _err:
+        st.warning(f"Módulo `historico` não pôde ser carregado: {_err}")
+        logger.exception("Falha ao importar historico")
         return
 
     with st.spinner("Reconstruindo histórico diário com dados reais de mercado…"):
         try:
-            from historico import reconstruct_from_assets
             registros = reconstruct_from_assets(dados)
         except Exception as e:
             logger.warning(f"reconstruct_from_assets falhou: {e}, usando fallback")
-            from historico import reconstruct_daily
             registros = reconstruct_daily(evolucao_por_conta)
 
     if not registros:
