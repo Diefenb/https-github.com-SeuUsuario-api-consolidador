@@ -6,7 +6,7 @@
 
 ## 1. O que é este projeto
 
-Sistema de consolidação de carteiras de investimentos para assessores financeiros da **API Capital / Capital Investimentos**. Processa relatórios PDF de corretoras (XP e BTG), extrai dados, normaliza, consolida múltiplas contas de um mesmo cliente e gera relatório Excel e PDF.
+Sistema de consolidação de carteiras de investimentos para assessores financeiros da **API Capital / Capital Investimentos**. Processa relatórios PDF de corretoras (XP e BTG), extrai dados, normaliza, consolida múltiplas contas de um mesmo cliente e gera relatório Excel. A partir de 2026-03-14, projeta posições para D0 usando taxas de mercado reais.
 
 **Usuário:** Gabriel (gabidiefenbach@gmail.com)
 **Pasta do projeto:** `/Consolidador/` (pasta selecionada no Cowork)
@@ -17,6 +17,8 @@ Sistema de consolidação de carteiras de investimentos para assessores financei
 
 **SOMENTE DADOS REAIS.** Todo número no relatório final deve ter origem rastreável em um PDF de corretora. Zero cálculos implícitos de rentabilidade. Zero estimativas. Campo sem dados = null. O relatório da corretora é soberano.
 
+> **Exceção explícita:** O módulo de projeção pro-rata-die (seção 17) é uma estimativa declarada, sempre rotulada como "Estimativa — não substitui o relatório oficial".
+
 ---
 
 ## 3. Arquitetura
@@ -26,6 +28,10 @@ FLUXO PRINCIPAL (sem IA, custo zero — uso diário):
 XP PDF  ──→ Parser Determinístico (pdfplumber) ──→ JSON canônico ─┐
 BTG PDF ──→ Parser Determinístico (pdfplumber) ──→ JSON canônico ─┤──→ Consolidador ──→ Excel
 JSON/XLSX importado manualmente ──────────────────────────────────┘
+
+FLUXO PRO-RATA-DIE (novo — atualização diária sem PDF):
+JSON canônico ──→ Enricher (resolve tipo de ativo) ──→ Projector ──→ Saldo estimado D0
+                  (regex nome + CVM fuzzy match)      (taxas BACEN/CVM/brapi)
 
 FLUXO EXCEÇÃO (com IA, sob demanda, ~R$0,50–1,50/PDF):
 PDF de corretora nova ──→ Claude API (Sonnet) ──→ JSON canônico ──→ entra no fluxo principal
@@ -38,47 +44,51 @@ PDF de corretora nova ──→ Claude API (Sonnet) ──→ JSON canônico ─
 ```
 Consolidador/
 ├── SESSION_CONTEXT.md             ← ESTE ARQUIVO (atualizar a cada sessão)
-├── CLAUDE.md                      ← referência técnica detalhada (não apagar)
-├── app.py                         ← Streamlit web app (interface principal, ~420 linhas, UI v2 ✅)
+├── app.py                         ← Streamlit web app (~955 linhas, UI v2 + seção D0 ✅)
 ├── consolidar.py                  ← CLI alternativo
-├── requirements.txt
+├── requirements.txt               ← inclui rapidfuzz, bizdays, yfinance (pós 2026-03-14)
 ├── .env                           ← ANTHROPIC_API_KEY (não tocar, não recriar)
 │
 ├── Consolidador_V3/               ← VERSÃO ATIVA DO CÓDIGO
-│   ├── CLAUDE.md                  ← doc técnica V3 (mais completa)
-│   ├── plano_consolidador_v3.md   ← cronograma e roadmap
-│   ├── plano_ui_v2.md             ← planejamento completo da nova UI (gerado 2026-03-07)
-│   ├── Dashboards/                ← imagens de referência visual (2 PNGs)
+│   ├── CLAUDE.md                  ← doc técnica V3 (sempre ler ao iniciar)
+│   ├── plano_consolidador_v3.md
+│   ├── plano_ui_v2.md
+│   ├── plano_biblioteca_dados_prorata.md  ← plano original do módulo pro-rata-die
 │   ├── src/
 │   │   ├── parsers/
-│   │   │   ├── __init__.py        ← detect_and_parse()
-│   │   │   ├── xp_performance.py  ← parse_xp_performance() — 707 linhas, IMPLEMENTADO
-│   │   │   └── btg_performance.py ← parse_btg_performance() — ~500 linhas, IMPLEMENTADO ✅
+│   │   │   ├── __init__.py        ← detect_and_parse() — detecta por conteúdo, 2 páginas
+│   │   │   ├── xp_performance.py  ← parse_xp_performance() — 707 linhas ✅
+│   │   │   └── btg_performance.py ← parse_btg_performance() — ~500 linhas ✅
+│   │   ├── market_data/           ← NOVO — módulo de dados de mercado (2026-03-14)
+│   │   │   ├── __init__.py        ← expõe get_cache(), fetch_cdi_range(), fetch_ipca_ultimos()
+│   │   │   ├── cache.py           ← SQLiteCache — 4 tabelas com TTL
+│   │   │   ├── bacen.py           ← BACEN SGS série 12 (CDI) e 433 (IPCA)
+│   │   │   ├── cvm_funds.py       ← cotas CVM + cadastral + fuzzy match CNPJ
+│   │   │   ├── rv_prices.py       ← preços ações/FIIs via brapi.dev + yfinance
+│   │   │   └── resolver.py        ← resolução nome → tipo_projecao + parâmetros
+│   │   ├── enricher.py            ← NOVO — orquestra resolução + persiste JSON enriquecido
+│   │   ├── projector.py           ← NOVO — cálculo pro-rata-die para D0
 │   │   ├── consolidator.py        ← agregação entre contas
 │   │   ├── normalizer.py          ← normalize_strategy() + clean_asset_name()
-│   │   ├── report_generator.py    ← geração Excel 6 abas (510 linhas)
-│   │   ├── importer.py            ← importação de JSON/XLSX padrão
-│   │   └── utils.py               ← helpers (parse_br_number, formatação)
-│   ├── schemas/consolidador_v2.json  ← JSON Schema Draft-07
-│   ├── templates/importacao_template.xlsx
-│   └── tests/
-│       ├── test_parsers.py
-│       └── fixtures/              ← VAZIO (ainda sem ground truth validado aqui)
+│   │   ├── report_generator.py    ← geração Excel 6 abas (523 linhas)
+│   │   ├── importer.py            ← importação JSON/XLSX
+│   │   └── utils.py               ← helpers
+│   ├── schemas/consolidador_v2.json
+│   └── output/extractions/
+│       ├── xp_3245269_v3.json     ← Jose Mestrener / XP (26 ativos, R$1.826.076)
+│       └── xp_8660669_v3.json     ← Jose Mestrener / XP (7 ativos, R$296.706)
 │
-├── output/
-│   ├── consolidado_jose_2026-01.xlsx       ← relatório Jose Mestrener gerado
-│   ├── consolidado_jose_2026-01_v2.xlsx    ← versão refinada
-│   ├── consolidado_cid_tania_2026-01.xlsx
-│   ├── consolidado_cid_tania_2026-01_v2.xlsx
-│   └── extractions/
-│       ├── jose_mestrener/        ← JSONs extraídos via IA (ground truth)
-│       ├── btg_5058054.json       ← Cid e Tania / BTG
-│       ├── btg_5165904.json
-│       ├── xp_14522738.json       ← Cid e Tania / XP
-│       └── xp_3476739.json
+├── data/                          ← NOVO — cache e posições enriquecidas (2026-03-14)
+│   ├── market_data/
+│   │   ├── market_cache.db        ← SQLite: taxas CDI/IPCA, cotas CVM, preços RV, resoluções
+│   │   └── cvm_cadastral_cache.csv ← cadastral CVM (refresh < 7 dias, ~50MB)
+│   └── posicoes/                  ← JSON enriquecidos por cliente (âncora + metadados)
+│       ├── jose_mestrener_posicoes.json  (gerado ao salvar via enricher.salvar_posicoes)
+│       └── ...
 │
-├── plano_projeto_consolidacao_v2_2.md  ← doc de decisões antigas (referência)
-└── prompt_gemini_identidade_visual.md  ← identidade visual Capital Investimentos
+└── output/
+    ├── consolidado_jose_2026-01.xlsx
+    └── extractions/ (JSONs via IA — ground truth)
 ```
 
 ---
@@ -87,8 +97,8 @@ Consolidador/
 
 | Cliente | Contas | Patrimônio Total | Status |
 |---------|--------|-----------------|--------|
-| Jose Goncalves Mestrener Junior | XP 3245269, XP 8660669, BTG 4016217, BTG 4019474 | R$ 4.902.064,78 | ✅ Excel gerado (v2) |
-| Cid e Tania | XP 14522738, XP 3476739, BTG 5058054, BTG 5165904 | (a validar) | ✅ Excel gerado (v2) |
+| Jose Goncalves Mestrener Junior | XP 3245269, XP 8660669, BTG 4016217, BTG 4019474 | R$ 4.902.064,78 | ✅ Excel + projeção D0 testada |
+| Cid e Tania | XP 14522738, XP 3476739, BTG 5058054, BTG 5165904 | (a validar) | ✅ Excel gerado |
 
 ---
 
@@ -105,6 +115,11 @@ Campos principais de cada JSON extraído:
 - `ativos` — lista detalhada com saldo, qtd, % alocação, rentabilidades
 - `movimentacoes` — histórico de entradas/saídas
 
+**Campos adicionados pelo módulo de projeção (nunca persistir no JSON canônico original):**
+- `ativos[i]._projecao` — tipo_projecao, pct_cdi, spread_aa, taxa_prefixada_aa, cnpj, ticker, confianca
+- `ativos[i]._proj_resultado` — saldo_projetado, variacao_rs, variacao_pct, metodo, detalhe
+- `projecao_d0` — pl_ancora, pl_estimado, variacao_rs, variacao_pct, dias_uteis_projetados, cobertura_pct
+
 ---
 
 ## 7. Decisões tomadas (não reverter sem discussão)
@@ -120,6 +135,8 @@ Campos principais de cada JSON extraído:
 9. **`consolidado.json` não vai dentro de `extractions/`** — gera conta fantasma
 10. **Deploy: Streamlit Community Cloud** (gratuito, conectar GitHub)
 11. **Modelo IA:** `claude-sonnet-4-5-20250929` (Sonnet, não Opus — custo/benefício)
+12. **Projeção D0: estimativa declarada** — toda exibição deve ter aviso "Estimativa — não substitui relatório oficial"
+13. **BACEN série 12 retorna taxa DIÁRIA em %** (ex: 0.055131% ao dia ≈ 14,9% a.a.) — NÃO é taxa anual
 
 ---
 
@@ -163,10 +180,11 @@ FIIs (tickers XXXX11) → reclassificar de "Renda Variável" para `Fundos Listad
 | CDB BTG não reconhecido | Regex `r"\bCDB[-\s]"` |
 | Pré Fixado / Pré-fixado split | Unificado em MAPA_ESTRATEGIA |
 | Retorno Absoluto (MM) | Mapeado para Multimercado |
-| BTG PDF roteado para XP parser | `app.py` usava `"btg" in file.name` — PDFs BTG se chamam `RelatorioDePerformance-XXXXXXX.pdf`. Resolvido: `detect_and_parse` por conteúdo |
-| `detect_and_parse` não reconhecia BTG | Texto BTG tem `"Relatório\nde Performance"` com `\n` no meio. Resolvido: regex `r"Relat.{0,4}rio\s*[\n\s]+de\s+Performance"` + leitura de 2 páginas |
-| BTG ligatura "fi" → `\x00` | pdfplumber substitui a ligatura fi por `\x00` null byte. Ex: "fixado" → "\x00xado". Resolvido: `_STRAT_CANONICAL` com padrões regex `\x00xado` |
-| Nomes de estratégia BTG mangled em composição | `_parse_composicao` usava `re.sub(r"[\x00]", "")` simples, resultando em "Pós-xado". Resolvido: substituir por `_normalize_btg_strategy()` |
+| BTG PDF roteado para XP parser | `detect_and_parse` agora usa conteúdo, não nome do arquivo |
+| `detect_and_parse` não reconhecia BTG | Regex `r"Relat.{0,4}rio\s*[\n\s]+de\s+Performance"` + 2 páginas |
+| BTG ligatura "fi" → `\x00` | `_normalize_btg_strategy()` com padrões regex tolerantes |
+| BACEN IPCA `/ultimos/N` → 400 | Usar endpoint de range com datas explícitas |
+| CDI projeção zerada | Série 12 retorna taxa DIÁRIA (não anual) — `daily = taxa_pct / 100` |
 
 ---
 
@@ -180,285 +198,60 @@ FIIs (tickers XXXX11) → reclassificar de "Renda Variável" para `Fundos Listad
 | Relatório output | Excel (openpyxl) |
 | Gráficos interativos | Plotly 6.x |
 | Interface web | Streamlit 1.54 |
-| Armazenamento | JSON files por cliente/mês |
+| Cache de mercado | SQLite local (`data/market_data/market_cache.db`) |
+| CDI diário | BACEN SGS API — série 12 (gratuito, sem auth) |
+| IPCA mensal | BACEN SGS API — série 433 (gratuito, sem auth) |
+| Cotas de fundos | CVM Dados Abertos — inf_diario_fi_YYYYMM.zip (D+1) |
+| Fuzzy match CNPJ | `rapidfuzz` WRatio vs cadastral CVM |
+| Calendário ANBIMA | `bizdays` (fallback: Seg-Sex sem feriados) |
+| Preços ações/FIIs | brapi.dev (<1 min) + yfinance fallback (~15 min) |
 | Deploy | Streamlit Community Cloud |
 | Repositório | GitHub — `Diefenb/https-github.com-SeuUsuario-api-consolidador` |
 
 ---
 
-## 12. Identidade visual (para UI e relatórios)
+## 12. Identidade visual
 
 - **Cor primária:** Azul escuro `#0D1B3E`
-- **Cor secundária / destaque:** Azul médio `#1E4D8C` / turquesa `#0097A7`
+- **Cor secundária / destaque:** Azul médio `#1A56DB`
 - **Fundo:** Off-white `#F8FAFC`
 - **Cards:** Branco `#FFFFFF` com borda `#E2E8F0`
 - **Fonte:** Inter (400, 500, 600)
 - **Logo:** Capital Investimentos (sidebar esquerda)
-- **Referência de UI:** Dashboard com 4 cards de métrica no topo, sidebar fixa, gráfico de área para evolução PL, barras verticais para rentabilidade mês a mês
 
 ---
 
-## 13. Backlog de features (To-Do List)
+## 13. Backlog de features
 
-> Ordem sugerida de implementação baseada em impacto × esforço.
-
-| # | Feature | Prioridade | Observações |
-|---|---------|-----------|-------------|
-| 1 | **Arquivo de contexto de sessão** | ✅ Feito | Este arquivo |
-| 2 | **Parser BTG completo** | ✅ Feito | ~500 linhas — state machine, todas as seções, testado vs ground truth |
-| 3 | **Nova UI — sidebar, cards, gráficos** | ✅ Feito | app.py reescrito, Plotly, dois modos (upload/dashboard) |
-| 4 | **Deploy Streamlit Community Cloud** | ✅ Feito | GitHub conectado, app em live (ver seção 16) |
-| 5 | **Tabela rentabilidade mensal no Excel** | Alta | Dados extraídos, falta validação visual das abas 4/5 com dados BTG |
-| 6 | **Gráficos embutidos no Excel** | Média | Charts do Plotly no Excel exportado |
-| 7 | **Área de remoção de ativos (PL parcial)** | Média | UI para excluir ativos antes de consolidar |
-| 8 | **Ajuste template Excel exportado** | Média | Identidade visual API Capital nos outputs |
-| 9 | **Importação de extratos via IA + lançamento manual** | Média | Expandir além dos relatórios mensais de performance |
-| 10 | **Carteiras de recomendação** | Baixa | Integração com planilhas asset da API Capital |
+| # | Feature | Status | Observações |
+|---|---------|--------|-------------|
+| 1 | Arquivo de contexto de sessão | ✅ Feito | Este arquivo |
+| 2 | Parser BTG completo | ✅ Feito | ~500 linhas, state machine |
+| 3 | Nova UI — sidebar, cards, gráficos | ✅ Feito | app.py, Plotly |
+| 4 | Deploy Streamlit Community Cloud | ✅ Feito | GitHub conectado |
+| 5 | Módulo pro-rata-die — posições D0 | ✅ Implementado | Sprints 1-4 completos |
+| 6 | CVM fuzzy match CNPJ para fundos | 🔶 Parcial | Código pronto, CNPJ não populado para José Mestrener |
+| 7 | Tabela rentabilidade Excel (visual) | Alta | Implementada, não validada com BTG |
+| 8 | Área de remoção de ativos (PL parcial) | Média | UI para excluir ativos antes de consolidar |
+| 9 | Gráficos embutidos no Excel | Média | Charts Plotly no Excel exportado |
+| 10 | Importação de extratos via IA | Baixa | Além dos relatórios mensais |
 
 ---
 
-## 14. Estado atual do projeto (atualizar a cada sessão)
+## 14. Estado atual do projeto
 
-**Última atualização:** 2026-03-07
+**Última atualização:** 2026-03-14
 
-### O que foi feito nas sessões anteriores — 2026-03-07 (BTG Parser)
-
-#### 1. Parser BTG completo — `btg_performance.py` (81 → ~500 linhas)
-
-O parser foi reescrito do zero. Antes existiam apenas 81 linhas de esqueleto sem lógica real. Agora cobre todas as seções do PDF BTG:
-
-**Seções extraídas:**
-- **Capa (pág. 0):** nome do cliente, número da conta (sem zeros à esquerda), data de referência (data final do período). Regex com `.{0,3}` para absorver `\x00` nas palavras acentuadas.
-- **Resumo (págs. 1 + 2):** patrimônio bruto, rentabilidade mês/ano, ganho financeiro mês/ano, rentabilidades 12m e 24m, %CDI calculado (rent / cdi * 100 para cada período), movimentações.
-- **Benchmarks (pág. 2):** CDI mês/ano/12m/24m extraído das linhas de período.
-- **Rentabilidade histórica mensal (pág. 2):** tabela ano × mês (14 valores por ano: jan–dez + total_ano + acumulado). Três linhas por bloco: portfólio%, CDI%, %CDI. Regex multi-token para cada linha.
-- **Evolução patrimonial (pág. 4):** tabela mensal com patrimônio_inicial, movimentações, IR pago, patrimônio_final, ganho, portfólio%, CDI%. BTG não tem IOF separado → `iof=0.0`.
-- **Composição por estratégia (pág. 5):** extração em dois passos — (1) tabela de alocação: nome + pct% + R$ saldo; (2) tabela de rentabilidade: 5 percentuais + nome abaixo. Matching fuzzy `_best_match` para unir os dois.
-- **Ativos (págs. 8+, seção "A rentabilidade completa"):** state machine com 7 estados (detalhado abaixo).
-
-**State machine para ativos (2 formatos de bloco):**
+### Histórico de commits
 
 ```
-Formato A — Renda Fixa (CDB, LCA, etc.):
-  Linha 1: NOME_PARCIAL + 4 pct% (ex: "BANCO AGIBANK S.A - CDB- 1,20% 1,20% 14,01% 29,82%")
-  Linha 2: SALDO + pct + pct + DATA (ex: "19.676,10 100,00 1,68 10/07/2027")
-  Linha 3: NOME_CONT + 4 abs_R$ (ex: "CDBB231B2JG 235,92 235,92 2.405,09 4.413,39")
-  Linha 4: CDI ...
-  Linha 5: % do CDI ...
-
-Formato B — Fundos e Tickers:
-  Linha 1: 4 pct% sozinhos (ex: "1,34% 1,34% 15,66% 32,90%")
-  Linha 2: NOME + SALDO + pct + pct + [DATA] (fundo) ou TICKER + SALDO + pct + pct (ação)
-  Linha 3: 4 abs_R$
-  Linha 4: CDI ...
-  Linha 5: % do CDI ...
-
-Sub-header de estratégia: NOME + 3 números (detectado apenas no estado FIND)
+(novo)  feat: implement pro-rata-die projection module with market data APIs
+8ce97e9 fix: remove illegal XML chars from BTG asset names before Excel write
+b03bb2f docs: update SESSION_CONTEXT with UI v2 progress and deploy instructions
+0a71f6f feat: redesign UI with dark sidebar, dashboard view, and Plotly charts
+98217a2 feat: implement full BTG parser and fix XP/BTG routing
+30e4143 Added Dev Container Folder
 ```
-
-**Estados:**
-- `FIND` → detecta sub-header de estratégia, Formato A ou Formato B
-- `RF_SALDO` → lê linha de saldo+data para Formato A
-- `RF_CONT` → lê continuação do nome + 4 abs para Formato A
-- `FUND_NAME` → lê linha de nome/saldo para Formato B
-- `ABS_EARN` → consome linha de ganhos absolutos
-- `WAIT_CDI` → espera linha `CDI ...`
-- `WAIT_PCTCDI` → lê `% do CDI ...` e salva ativo
-
-#### 2. `_STRAT_CANONICAL` e `_normalize_btg_strategy()`
-
-O pdfplumber substitui a ligatura tipográfica "fi" (fi-ligature, U+FB01) pelo null byte `\x00`. Isso afeta palavras como:
-- "fixado" → "\x00xado"
-- "fixo" → "\x00xo"
-
-E alguns outros caracteres são substituídos por `\ufffd` (replacement char). Portanto:
-- "Pós-fixado" → "Pós-\x00xado"
-- "Pré-fixado" → "Pré-\x00xado"
-- "Inflação" → "Infla\ufffdo" (o "ã" vira \ufffd)
-- "Renda Variável" → "Rend\x00 Vari\ufffavel" (fi de "Rend**a**" não, mas "fi" em "fixado" sim)
-
-`_STRAT_CANONICAL` é uma lista de `(regex_compilado, nome_canônico)` que cobre todos esses casos com padrões tolerantes. A função `_normalize_btg_strategy(text)` percorre a lista e retorna o canônico, ou faz fallback removendo os caracteres problemáticos.
-
-#### 3. Fix `_parse_composicao` — nomes de estratégia limpos
-
-**Problema:** A função usava `re.sub(r"[\x00]", "", nome_raw)` para limpar o nome, mas isso só removia o null byte, resultando em "Pós-xado" (sem o "fi").
-
-**Solução:** Substituído por `_normalize_btg_strategy(nome_raw)`, que mapeia corretamente para "Pós-fixado", "Pré-fixado", etc. usando os mesmos padrões canônicos.
-
-#### 4. Fix `detect_and_parse` — `parsers/__init__.py`
-
-**Problemas encontrados:**
-1. Lia apenas 1 página — BTG tem a primeira página com apenas "Relatório" e a segunda com "de Performance" (split por `\n`).
-2. O regex buscava `"Relatório de Performance"` como string literal — falhava quando havia `\n` entre as palavras.
-3. Regra XP incluía número de conta hardcoded (`"8660669" in text`).
-
-**Solução:**
-- Passou a ler 2 páginas (`n_pages=2`) para detecção.
-- Regex tolerante: `r"Relat.{0,4}rio\s*[\n\s]+de\s+Performance"` captura tanto na mesma linha quanto em linhas separadas.
-- Removidas heurísticas frágeis baseadas em número de conta.
-
-#### 5. Fix `app.py` — roteamento por conteúdo, não por nome de arquivo
-
-**Problema:** `app.py` roteava PDFs usando `"btg" in file.name.lower()`. PDFs BTG se chamam `RelatorioDePerformance-005058054.pdf` — não contém "btg". Resultado: XP parser rodava em PDFs BTG e retornava `ativos=[]`.
-
-**Solução:** Removida a lógica de roteamento por nome. Agora todos os PDFs passam por `detect_and_parse(tmp_path)`, que faz a detecção por conteúdo.
-
-#### 6. Testes realizados
-
-Todos os 7 PDFs dos dois clientes foram testados com `detect_and_parse`:
-
-| PDF | Detecção | Conta | Ativos | Patrimônio |
-|-----|----------|-------|--------|------------|
-| RelatorioDePerformance-005058054.pdf | BTG | 5058054 | 31 | R$ 1.171.109,49 |
-| RelatorioDePerformance-005165904.pdf | BTG | 5165904 | 36 | R$ 1.212.485,66 |
-| XPerformance - 14522738 - Ref.30.01.pdf | XP | 14522738 | 25 | R$ 1.376.095,14 |
-| XPerformance - 3476739 - Ref.30.01.pdf | XP | 3476739 | 29 | R$ 1.240.327,68 |
-| RelatorioDePerformance-004016217.pdf | BTG | 4016217 | 20 | R$ 472.169,37 |
-| XPerformance - 3245269 - Ref.30.01.pdf | XP | 3245269 | 26 | R$ 1.826.076,84 |
-| XPerformance - 8660669 - Ref.30.01.pdf | XP | 8660669 | 7 | R$ 296.706,75 |
-
-Validação contra ground truth (`btg_5058054.json`):
-- `patrimonio_total_bruto`: OK (1.171.109,49)
-- `rentabilidade_mes_pct`: OK (1,51%)
-- `ganho_mes_rs`: OK (16.825,50)
-- `pct_cdi_mes`: OK (130,17%)
-- `rentabilidade_12m_pct`: OK (15,43%)
-- Todos os 6 estratégias da composição: OK com nomes canônicos corretos
-- Contagem de ativos: OK (31/31)
-
-#### 7. Commit realizado
-
-```
-git commit: feat: implement full BTG parser and fix XP/BTG routing
-Hash: 01b4b07
-Arquivos: Consolidador_V3/src/parsers/btg_performance.py
-          Consolidador_V3/src/parsers/__init__.py
-          app.py
-+944 / -64 linhas
-```
-
----
-
-### O que foi feito nesta sessão — 2026-03-07 (UI v2 + Deploy)
-
-#### 1. Reescrita completa do `app.py` (253 → ~420 linhas)
-
-**Motivação:** O app original era tela única sem identidade visual, sem gráficos e com roteamento por nome de arquivo. A nova versão implementa o mockup do `plano_ui_v2.md` do zero.
-
-**Arquitetura nova:**
-- **Navegação por `st.session_state["view"]`** — dois modos: `"upload"` e `"dashboard"`, controlados por session_state sem multi-page do Streamlit
-- **Sem formulário** (`st.form`) — inputs fora do form para feedback imediato por arquivo
-- Botão "Nova Importação" limpa o estado e volta para upload com `st.rerun()`
-- Funções bem separadas: `_sidebar()`, `_cards_upload()`, `_cards_dashboard()`, `_chart_evolucao()`, `_chart_rent_mensal()`, `_tabela_contas()`, `_tabela_alocacao()`, `_view_upload()`, `_view_dashboard()`, `_init_state()`, `_reset_state()`
-
-**Sidebar escura (`#0D1B3E`):**
-- Logo "CAPITAL INVESTIMENTOS" em texto estilizado com sublabel em letra-espaçada
-- Itens de navegação com estado ativo (borda esquerda `#1A56DB` + fundo semi-transparente)
-- Card de cliente (nome + data de referência) visível apenas na view dashboard
-- Botão "Nova Importação" com estilo adaptado para fundo escuro via CSS específico para sidebar
-
-**4 Cards HTML (não `st.metric`):**
-- Implementados como `st.markdown(html, unsafe_allow_html=True)` dentro de grid CSS `display:grid; grid-template-columns: repeat(4,1fr)`
-- *View Upload:* Arquivos carregados, Corretoras detectadas, Horário última consolidação, Contagem de erros
-- *View Dashboard:* AuM Total, Rent. Mês (média ponderada por PL), %CDI Mês (média ponderada), Nº Contas
-- Média ponderada = `sum(rent * patrimônio) / sum(patrimônio)` por conta
-- Classe CSS `.positive`/`.negative`/`.neutral` para coloração automática de deltas
-
-**Gráfico de Evolução Patrimonial (Plotly):**
-- Fonte de dados: `dados_consolidados["evolucao_por_conta"]` — lista de blocos por conta, cada bloco com `evolucao_patrimonial` mensal
-- Agrega somando `patrimonio_final` por mês (`data = "YYYY-MM"`) via `defaultdict(float)`
-- `plotly.graph_objects.Scatter` com `fill="tozeroy"`, cor `#1A56DB`, fill `rgba(26,86,219,0.07)`
-- Eixo X: rótulos "Jan/26", "Fev/26" etc; eixo Y: "R$ X.XXX"
-- Fallback: `st.info()` se menos de 2 meses de dados
-
-**Gráfico de Rentabilidade Mensal (Plotly):**
-- Fonte de dados: `dados_consolidados["rentabilidade_por_conta"]` — histórico mensal por conta
-- Agrega por `(ano, mes_key)` → lista de valores entre contas → média simples
-- Pega os últimos 6 meses com dados disponíveis
-- `plotly.graph_objects.Bar` com cor por sinal: `#16A34A` (positivo) / `#DC2626` (negativo)
-- Rótulos de valor acima de cada barra (`textposition="outside"`)
-
-**Tabelas com `column_config`:**
-- `_tabela_contas`: usa `dados_consolidados["contas"]` — corretora, conta, patrimônio, % carteira, rent. mês, %CDI, ganho mês
-- `_tabela_alocacao`: usa `dados_consolidados["alocacao_por_estrategia"]` (campo correto — o app antigo usava `composicao_por_estrategia` que não existe no consolidador)
-- `st.column_config.NumberColumn` com `format="R$ %.2f"` e `format="%.2f%%"`
-
-**Lista de arquivos com badges antes de processar:**
-- Cada arquivo carregado aparece como linha HTML com badge colorido: `badge-xp` (azul), `badge-btg` (amarelo), `badge-json` (roxo)
-- Detecção por nome do arquivo (cosmético — não afeta o parser que usa conteúdo)
-
-**Histórico da sessão:**
-- Tabela acumulativa de todos os arquivos processados na sessão (horário, arquivo, corretora, conta, ativos, patrimônio, status OK/Erro)
-- Persiste entre uploads na mesma sessão via `st.session_state["historico"]`
-
-**CSS renovado:**
-- Sidebar: `section[data-testid="stSidebar"] > div:first-child { background-color: #0D1B3E }` + forçar texto branco em filhos
-- Botão sidebar: CSS específico para não conflitar com botões do main (`div[data-testid="stMainBlockContainer"]`)
-- Dropzone: `min-height: 130px` + hover com borda azul
-- Download button: força cor escura via `!important` (Streamlit não expõe classe separada)
-
-**Correção de campo crítico:**
-- `app.py` antigo exibia `dados_consolidados.get('composicao_por_estrategia')` — campo que não existe no retorno de `consolidate()`
-- Campo correto é `alocacao_por_estrategia` (confirmado lendo `consolidator.py:112`)
-
-#### 2. `requirements.txt` — Plotly adicionado
-
-```
-plotly>=5.18.0   ← adicionado (instalado como 6.6.0)
-```
-
-#### 3. Deploy no Streamlit Community Cloud
-
-**Commits no GitHub:**
-```
-0a71f6f  feat: redesign UI with dark sidebar, dashboard view, and Plotly charts
-98217a2  feat: implement full BTG parser and fix XP/BTG routing
-30e4143  Added Dev Container Folder  ← commit do GitHub (devcontainer)
-cf734aa  feat: initial commit for API Consolidador v3 with Streamlit
-```
-
-**Repositório:** `https://github.com/Diefenb/https-github.com-SeuUsuario-api-consolidador`
-**Branch:** `main`
-**Entry point:** `app.py` (raiz do repo)
-
-**Para fazer deploy no Streamlit Community Cloud:**
-1. Acesse `share.streamlit.io`
-2. Clique em "Create app"
-3. Selecione o repositório `Diefenb/https-github.com-SeuUsuario-api-consolidador`
-4. Branch: `main` | Main file path: `app.py`
-5. Clique "Deploy!" — o Streamlit lê o `requirements.txt` automaticamente
-
-**Configuração já incluída no repo:**
-- `.streamlit/config.toml` com tema completo (primaryColor, backgroundColor, textColor, toolbarMode=minimal)
-- `.devcontainer/devcontainer.json` configurado para GitHub Codespaces
-- `.gitignore` exclui `.env`, `output/`, `*.pdf` (sem dados sensíveis no repo)
-
-**Variável de ambiente necessária (para fluxo IA — exceção):**
-- No painel do Streamlit Cloud: Settings → Secrets → adicionar `ANTHROPIC_API_KEY = "sk-ant-..."`
-- O fluxo principal (parsers determinísticos) roda sem essa chave
-
----
-
-### O que está funcionando agora
-
-- **Parser XP** (`xp_performance.py`) — 707 linhas, funcional, testado ✅
-- **Parser BTG** (`btg_performance.py`) — ~500 linhas, funcional, testado vs ground truth ✅
-- **Detecção automática de formato** (`detect_and_parse`) — por conteúdo, 2 páginas, regex robusto ✅
-- **Consolidador** (`consolidator.py`) — agrega múltiplas contas com todos os campos corretos ✅
-- **Gerador de Excel** (`report_generator.py`) — 6 abas ✅
-- **UI nova** (`app.py`) — sidebar escura, dois modos, 4 cards, 2 gráficos Plotly, tabelas ✅
-- **GitHub** — push realizado, 4 commits no histórico ✅
-- **Deploy Streamlit Cloud** — repo conectável, `.streamlit/config.toml` no lugar ✅
-
-### O que ainda está incompleto
-
-- `tests/fixtures/` — vazio (JSONs de ground truth estão em `output/extractions/`, não formalizados como fixtures)
-- Abas 4 e 5 do Excel (Rentabilidade mensal / Evolução) precisam validação visual com os novos dados BTG
-- Streamlit Cloud precisa ser conectado manualmente (não automatizável via CLI — ver instruções acima)
-
-### Próximo passo sugerido
-
-**Validar o Excel gerado** com os parsers determinísticos — abrir o arquivo Excel e confirmar que as abas 4 (Rentabilidade mensal) e 5 (Evolução patrimonial) estão corretas com dados BTG. Depois partir para feature de remoção de ativos (PL parcial) na UI.
 
 ---
 
@@ -476,30 +269,264 @@ cf734aa  feat: initial commit for API Consolidador v3 with Streamlit
 **Repositório GitHub:**
 `https://github.com/Diefenb/https-github.com-SeuUsuario-api-consolidador`
 
-**Histórico de commits (main):**
-```
-0a71f6f  feat: redesign UI with dark sidebar, dashboard view, and Plotly charts
-98217a2  feat: implement full BTG parser and fix XP/BTG routing
-30e4143  Added Dev Container Folder
-cf734aa  feat: initial commit for API Consolidador v3 with Streamlit
-```
-
 **Para conectar ao Streamlit Community Cloud (primeira vez):**
 1. Acesse `share.streamlit.io` com a conta Google/GitHub do Gabriel
 2. "Create app" → "From existing repo"
 3. Repositório: `Diefenb/https-github.com-SeuUsuario-api-consolidador`
 4. Branch: `main` | Main file: `app.py`
-5. Clique "Deploy!" — o Streamlit lê `requirements.txt` e instala tudo automaticamente
-6. Em Settings → Secrets, adicionar: `ANTHROPIC_API_KEY = "sk-ant-..."` (só necessário para fluxo IA, não para o fluxo principal)
+5. Deploy! — lê `requirements.txt` automaticamente
+6. Em Settings → Secrets, adicionar: `ANTHROPIC_API_KEY = "sk-ant-..."` (só para fluxo IA)
 
-**Após conectado, deploys futuros são automáticos** — qualquer `git push origin main` atualiza o app em ~30s.
+**Após conectado, deploys futuros são automáticos** com qualquer `git push origin main`.
 
-**Arquivos que o Streamlit Cloud lê:**
-- `requirements.txt` — instala todas as dependências Python
-- `.streamlit/config.toml` — tema (primaryColor `#0D1B3E`, bg `#F8FAFC`, toolbar minimal)
-- `app.py` — entry point
+---
 
-**Arquivos sensíveis excluídos do repo (`.gitignore`):**
-- `.env` — chave Anthropic
-- `output/` — relatórios Excel gerados
-- `*.pdf` — PDFs dos clientes
+## 17. Módulo Pro-Rata-Die — Referência técnica completa
+
+> Implementado em 2026-03-14. Projeta posições para D0 usando taxas de mercado reais a partir da âncora do último relatório.
+
+### 17.1 Conceito central
+
+```
+[Saldo do último relatório]  →  [Projeção N dias com taxas reais]  →  [Estimativa D0]
+      (âncora — dado real)                                               (rotulada)
+```
+
+O saldo do relatório já incorpora toda a rentabilidade histórica, IR, IOF e movimentações. Projetamos apenas os dias entre o último relatório e hoje — tipicamente 15–45 dias. Zero risco de erros acumulados desde a compra.
+
+### 17.2 Módulos e responsabilidades
+
+#### `market_data/cache.py` — SQLiteCache
+
+```python
+db_path = Consolidador/data/market_data/market_cache.db
+```
+
+4 tabelas SQLite:
+- `taxas_diarias(data, serie, valor, updated_at)` — CDI e IPCA do BACEN
+- `cotas_fundos(cnpj, data, valor_cota, updated_at)` — cotas CVM por CNPJ
+- `precos_rv(ticker, data, fechamento, updated_at)` — ações/FIIs
+- `resolved_assets(nome_original, tipo_projecao, cnpj, ticker, pct_cdi, spread_aa, taxa_prefixada_aa, match_score, confianca, resolved_at, override_manual)` — cache de resoluções
+
+**Boas práticas:**
+- `override_manual = 1` protege correções manuais de serem sobrescritas na próxima resolução automática
+- Cache de resoluções evita re-executar fuzzy matching a cada run
+- `get_resolved()` é chamado antes de qualquer lógica — se tiver cache com `tipo_projecao`, retorna direto
+
+#### `market_data/bacen.py` — BACEN SGS API
+
+**⚠️ Fato crítico — ler antes de qualquer manutenção:**
+
+A **série 12 (CDI) retorna taxa DIÁRIA em %**, não taxa anual.
+- Valor típico: `0.055131` = 0,055131% ao dia ≈ 14,9% a.a.
+- Para usar: `daily_rate = valor / 100` (já é diária)
+- Para 92% CDI: `fator_dia = 1 + (valor/100) * (92/100)`
+- **NÃO** usar `(1 + taxa/100)^(1/252)` — seria dobrar a conversão
+
+A **série 433 (IPCA)** retorna taxa mensal em %.
+- Endpoint `/ultimos/N` retorna **400 Bad Request** — usar `_fetch_serie()` com range de datas
+- Endpoint correto: `/dados?formato=json&dataInicial=DD/MM/YYYY&dataFinal=DD/MM/YYYY`
+
+```python
+# ✅ Correto — CDI diário
+daily_cdi = taxa_diaria_pct / 100.0   # 0.055131 / 100 = 0.00055131
+fator_dia = 1.0 + daily_cdi * (pct_cdi / 100.0)
+
+# ❌ Errado — dobra a conversão
+daily_cdi = (1 + taxa/100) ** (1/252) - 1   # NÃO FAZER
+```
+
+#### `market_data/resolver.py` — Resolução de tipos de ativo
+
+Resolve o nome do ativo → tipo de projeção + parâmetros, sem chamar API externa.
+Usa cache SQLite (`resolved_assets`) para persistir resultados entre runs.
+
+**Prioridade das regras (ordem importa):**
+
+1. **CDI %**: `r"(\d+[,.]?\d*)\s*%\s*(?:DO\s+)?(?:CDI|DI)\b"` — cobre "92,00% CDI", "100% do CDI"
+2. **IPCA+**: `r"IPC(?:-?A)?\s*\+\s*([\d,]+)%"` — **crítico**: `(?:-?A)?` cobre AMBOS "IPC-A +" e "IPCA +"
+3. **CDI+spread**: `r"(?:CDI|DI)\s*\+\s*([\d,]+)%"` — cobre "CDI + 0,50%"
+4. **Fundo** (por nome): `r"\b(?:FIC|FIF|FIDC|FIA|FIRF|FICF|FUNDO|FUND|FIAGRO|FIP|CI)\b"` — "CI" = Capital Investimento
+5. **Ticker B3**: `r"\b([A-Z]{4}\d{1,2})\b"` — cobre ações e FIIs
+6. **Prefixado** (final da string): `r"[-–]\s*(\d{1,2}[,.]?\d+)%(?:\s*a\.?a\.?)?\s*$"` — "- 12,25%"
+
+**Resultado de cobertura em produção (Jose Mestrener, 26 ativos):**
+- `fundo_cota`: 15 (58%) — ex: V8 Mercury CI, SPX Seahawk, Sparta Max
+- `ipca_spread`: 7 (27%) — ex: CDB XP IPCA+10.20%, NTN-B IPCA+6.25%
+- `prefixado`: 3 (12%) — ex: CDB FACTA 12.25%, CRA UNIDAS 13.70%
+- `cdi_pct`: 1 (4%) — LCD BRDE 92% CDI
+- **Total: 100% cobertura** (sem CVM fuzzy match)
+
+**Para adicionar novos padrões de ativo:** Inserir na função `_resolve_by_regex()` antes do `return None`, na posição correta de prioridade. Sempre testar contra os ativos reais dos dois clientes.
+
+#### `market_data/cvm_funds.py` — Cotas e CNPJ de fundos
+
+**Cadastral CVM:**
+- URL: `https://dados.cvm.gov.br/dados/FI/CAD/DADOS/registro_classe.csv`
+- Salvo em: `data/market_data/cvm_cadastral_cache.csv`
+- Refresh automático se > 7 dias (via `ensure_cadastral_cache()`)
+- Filtrar por `Situacao == "EM FUNCIONAMENTO NORMAL"` (~80k de 300k linhas)
+- Requer `rapidfuzz` instalado — sem ele, fuzzy match é desabilitado
+
+**Fuzzy match:** `rapidfuzz.fuzz.WRatio` entre nome normalizado do PDF e `Denominacao_Social` da CVM
+- Score ≥ 85 → `confianca = "alta"` + CNPJ aceito
+- Score 70-84 → `confianca = "media"` + CNPJ aceito com aviso
+- Score < 70 → CNPJ rejeitado, `tipo_projecao = "fundo_cota"` sem CNPJ
+
+**Cotas diárias (inf_diario):**
+- URL: `https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_YYYYMM.zip`
+- ZIP com CSV, ~10MB comprimido por mês
+- Latência D+1 (~10h do dia seguinte)
+- FIIs: preferir preço B3 via brapi (mais atualizado) em vez de cota CVM
+
+#### `market_data/rv_prices.py` — Preços RV
+
+- **brapi.dev**: endpoint `https://brapi.dev/api/quote/{ticker}` — token via `BRAPI_TOKEN` env var
+- **yfinance fallback**: `yf.Ticker("{ticker}.SA")` — sufixo `.SA` obrigatório para ativos B3
+- Preço atual: tentativa brapi → fallback yfinance
+- Preço histórico: tentativa brapi com `range=1mo` → fallback yfinance com `history()`
+- Cache em `precos_rv` com data de fechamento
+
+#### `enricher.py` — Orquestrador de enriquecimento
+
+```python
+from enricher import enrich_portfolio, salvar_posicoes, carregar_posicoes
+
+# Enriquecer um relatório
+enriched = enrich_portfolio(relatorio_json, use_cvm=True)
+
+# Salvar para uso futuro (âncora persistida)
+caminho = salvar_posicoes(enriched, "jose mestrener")
+
+# Recarregar em outra sessão
+enriched = carregar_posicoes("jose mestrener")
+```
+
+**Posições salvas em:** `data/posicoes/<cliente>_posicoes.json`
+
+**Importante:** `use_cvm=True` ativa o fuzzy match contra o cadastral CVM (necessário para obter CNPJ de fundos). A primeira execução baixa ~50MB do cadastral.
+
+#### `projector.py` — Cálculo das projeções
+
+```python
+from projector import project_portfolio
+
+resultado = project_portfolio(relatorio_enriquecido, data_hoje=date(2026, 3, 14))
+proj = resultado["projecao_d0"]
+# proj["pl_ancora"], proj["pl_estimado"], proj["variacao_pct"], ...
+```
+
+**Fórmulas implementadas:**
+
+| Tipo | Fórmula | Dados necessários |
+|------|---------|------------------|
+| `cdi_pct` | `VA × ∏(1 + cdi_dia × pct/100)` para cada dia útil | BACEN série 12 |
+| `cdi_spread` | `VA × ∏(1 + cdi_dia + spread_diario)` | BACEN série 12 |
+| `ipca_spread` | `VA × fator_ipca × (1+spread)^(du/252)` | BACEN série 433 |
+| `prefixado` | `VA × (1+taxa)^(du/252)` | Sem API |
+| `fundo_cota` | `VA / cota_ancora × cota_hoje` | CVM inf_diario |
+| `rv_preco` | `VA / preco_ancora × preco_hoje` | brapi/yfinance |
+| `caixa` | Não projetar | — |
+| `sem_projecao` | Exibir âncora | — |
+
+**Calendário de dias úteis:**
+- Tenta `bizdays.Calendar.load("ANBIMA")` com feriados corretos
+- Fallback: Seg-Sex sem feriados (leve subestimação em semanas com feriados)
+
+**Campo `_proj_resultado` adicionado a cada ativo:**
+```json
+{
+  "saldo_projetado": 54526.80,
+  "variacao_rs": 626.85,
+  "variacao_pct": 1.1629,
+  "metodo": "ipca_spread",
+  "detalhe": "IPCA + 10.20%",
+  "confianca": "alta"
+}
+```
+
+### 17.3 Integração com app.py
+
+A seção "Posições Estimadas D0" é um `st.expander()` no dashboard, aparece após download do Excel. Não bloqueia o fluxo principal.
+
+```python
+# Fluxo no app.py:
+relatorios, hist, erros = _processar_arquivos(uploaded_files)
+dados = consolidate(reports=relatorios, ...)
+generate_report(dados, excel_path)
+
+st.session_state["relatorios_individuais"] = relatorios  # ← novo
+
+# No dashboard:
+_posicoes_d0_section(relatorios_individuais)
+# → chama enrich_portfolio() + project_portfolio() internamente
+```
+
+**Import lazy para não bloquear o app se dependências não estiverem instaladas:**
+```python
+def _import_projecao():
+    try:
+        from enricher import enrich_portfolio
+        from projector import project_portfolio
+        return enrich_portfolio, project_portfolio
+    except Exception:
+        return None, None
+```
+
+### 17.4 Resultados validados em produção
+
+**Base:** Jose Mestrener / XP 3245269 / âncora 2026-01-30 / projeção 2026-03-14 (30 dias úteis)
+
+| Ativo | Tipo | Variação | Esperado |
+|-------|------|---------|---------|
+| LCD BRDE 92% CDI | cdi_pct | +1,53% | 30du × 0,0507%/du ≈ 1,53% ✅ |
+| CDB XP IPCA+10,20% | ipca_spread | +1,94% | IPCA~1,03% + spread~1,21% ≈ 2,2% ✓ |
+| CDB FACTA 12,25% a.a. | prefixado | +1,39% | (1,1225)^(30/252) = 1,0138 ✅ |
+| CDB Paraná 14,20% a.a. | prefixado | +1,59% | (1,1420)^(30/252) = 1,0159 ✅ |
+| CRA UNIDAS 13,70% a.a. | prefixado | +1,54% | (1,1370)^(30/252) = 1,0155 ✅ |
+
+**PL total âncora:** R$ 1.808.182 → **Estimativa D0:** R$ 1.816.993 (+R$ 8.811 / +0,49%)
+
+### 17.5 Dependências novas (pós 2026-03-14)
+
+```
+rapidfuzz>=3.6.0    # fuzzy match nome → CNPJ CVM
+bizdays>=0.3.12     # calendário ANBIMA (opcional — tem fallback)
+yfinance>=0.2.36    # preços RV fallback
+requests>=2.31.0    # já existia — APIs BACEN, CVM, brapi
+```
+
+Instalar: `pip install rapidfuzz bizdays yfinance`
+
+### 17.6 Boas práticas de manutenção
+
+1. **Nunca modificar a fórmula CDI sem ler a seção 17.2** — a série 12 já retorna taxa diária
+2. **`override_manual = 1` no SQLite** — ao corrigir manualmente um CNPJ no banco, setar este campo para proteger da próxima re-resolução
+3. **Adicionar novos padrões de ativo** em `resolver.py::_resolve_by_regex()` na posição correta (CDI tem precedência sobre IPCA+ que tem precedência sobre PRE)
+4. **Testar sempre nos 26 ativos reais** do xp_3245269_v3.json antes de commitar mudanças no resolver
+5. **Cache SQLite** está em `data/market_data/market_cache.db` — não commitar no git (está no .gitignore implícito via `data/`)
+6. **Atualizar cadastral CVM** é automático (>7 dias) — se forçar, chamar `ensure_cadastral_cache(force=True)`
+7. **Projeção de fundos** só funciona se CNPJ estiver mapeado — o fuzzy match CVM automaticamente faz isso se `use_cvm=True`
+
+### 17.7 O que falta para cobertura completa de fundos
+
+Os 15 fundos classificados como `fundo_cota` precisam de CNPJ para projeção. Próximos passos:
+1. Rodar `enrich_portfolio(relatorio, use_cvm=True)` — download do cadastral CVM (~50MB)
+2. Verificar os matches no SQLite (`resolved_assets` onde `tipo_projecao='fundo_cota'`)
+3. Para matches com `confianca='baixa'`, corrigir manualmente o CNPJ e setar `override_manual=1`
+4. Após correto, `fetch_fund_nav()` busca as cotas automaticamente da CVM
+
+---
+
+## 18. Deploy — Variáveis de ambiente opcionais
+
+| Variável | Onde usar | Obrigatório |
+|----------|-----------|-------------|
+| `ANTHROPIC_API_KEY` | Fluxo exceção (PDF desconhecido) | Não |
+| `BRAPI_TOKEN` | brapi.dev (RV/FIIs) | Não (15k req/mês sem token) |
+
+Setar no Streamlit Cloud: Settings → Secrets:
+```toml
+ANTHROPIC_API_KEY = "sk-ant-..."
+BRAPI_TOKEN = "token_brapi_aqui"
+```

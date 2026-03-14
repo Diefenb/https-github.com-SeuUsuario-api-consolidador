@@ -6,16 +6,23 @@ Sistema de consolidação de carteiras de investimentos para assessores financei
 ## Regra fundamental
 **SOMENTE DADOS REAIS.** Todo número no relatório final deve ter origem rastreável em um PDF de corretora ou arquivo de importação. Zero cálculos implícitos de rentabilidade. Zero estimativas. Campo sem dados = null. O relatório da corretora é soberano.
 
+> **Exceção declarada:** O módulo pro-rata-die (`enricher.py`, `projector.py`, `market_data/`) projeta posições para D0 usando taxas de mercado reais. É sempre rotulado como "Estimativa" na UI e nunca sobrescreve dados do relatório oficial.
+
 ## Arquitetura
 
 ```
-FLUXO PRINCIPAL (sem IA, custo zero):
-XP PDF ──→ Parser Determinístico ──→ JSON padrão ─┐
-BTG PDF ──→ Parser Determinístico ──→ JSON padrão ─┤──→ Consolidador ──→ Excel
-JSON/XLSX importado manualmente ───────────────────┘
+FLUXO PRINCIPAL (sem IA, custo zero — uso diário):
+XP PDF  ──→ Parser Determinístico ──→ JSON canônico ─┐
+BTG PDF ──→ Parser Determinístico ──→ JSON canônico ─┤──→ Consolidador ──→ Excel
+JSON/XLSX importado manualmente ────────────────────┘
 
-FLUXO EXCEÇÃO (com IA, sob demanda, custo ~R$0,50-1,50):
-PDF de corretora nova ──→ Claude API ──→ JSON padrão ──→ entra no fluxo principal
+FLUXO PRO-RATA-DIE (novo — atualização diária sem PDF):
+JSON canônico ──→ Enricher ──→ Projector ──→ Saldo estimado D0 (rotulado)
+                 (resolver    (taxas BACEN
+                  + CVM)       CVM, brapi)
+
+FLUXO EXCEÇÃO (com IA, sob demanda, ~R$0,50-1,50):
+PDF de corretora nova ──→ Claude API ──→ JSON canônico ──→ entra no fluxo principal
 ```
 
 **Princípio:** IA é ferramenta de exceção, não de produção. O fluxo diário roda 100% determinístico.
@@ -26,8 +33,8 @@ PDF de corretora nova ──→ Claude API ──→ JSON padrão ──→ entr
 Consolidador/
 ├── CLAUDE.md                          ← este arquivo (leia SEMPRE ao iniciar)
 ├── .env                               ← ANTHROPIC_API_KEY (só para fluxo exceção)
-├── requirements.txt
-├── app.py                             ← Streamlit web app (interface principal)
+├── requirements.txt                   ← inclui rapidfuzz, bizdays, yfinance (pós 2026-03-14)
+├── app.py                             ← Streamlit web app (~955 linhas, UI v2 + seção D0)
 ├── consolidar.py                      ← CLI alternativo
 ├── config/prompts/                    ← Prompts IA (só para fluxo exceção)
 │   ├── xp_performance.txt
@@ -35,13 +42,22 @@ Consolidador/
 ├── src/
 │   ├── __init__.py
 │   ├── parsers/                       ← Parsers determinísticos (FLUXO PRINCIPAL)
-│   │   ├── __init__.py                ← detect_and_parse()
-│   │   ├── xp_performance.py          ← parse_xp_performance()
-│   │   └── btg_performance.py         ← parse_btg_performance()
+│   │   ├── __init__.py                ← detect_and_parse() — detecta por conteúdo (2 págs)
+│   │   ├── xp_performance.py          ← parse_xp_performance() — 707 linhas
+│   │   └── btg_performance.py         ← parse_btg_performance() — ~500 linhas
+│   ├── market_data/                   ← NOVO (2026-03-14) — dados de mercado em tempo real
+│   │   ├── __init__.py                ← expõe get_cache(), fetch_cdi_range(), fetch_ipca_ultimos()
+│   │   ├── cache.py                   ← SQLiteCache — 4 tabelas, TTL, override_manual
+│   │   ├── bacen.py                   ← BACEN SGS série 12 (CDI diário) e 433 (IPCA mensal)
+│   │   ├── cvm_funds.py               ← cotas fundos CVM + cadastral + fuzzy match CNPJ
+│   │   ├── rv_prices.py               ← preços ações/FIIs: brapi.dev + yfinance fallback
+│   │   └── resolver.py                ← nome do ativo → tipo_projecao + parâmetros (sem rede)
+│   ├── enricher.py                    ← NOVO — orquestra resolver + persiste JSON enriquecido
+│   ├── projector.py                   ← NOVO — cálculo pro-rata-die para D0
 │   ├── extractor.py                   ← Extração via IA (SÓ EXCEÇÕES)
 │   ├── normalizer.py                  ← SOMENTE: normalize_strategy() + clean_asset_name()
 │   ├── consolidator.py                ← Agregação entre contas (estratégia + corretora)
-│   ├── report_generator.py            ← Geração Excel 6 abas
+│   ├── report_generator.py            ← Geração Excel 6 abas (523 linhas)
 │   ├── importer.py                    ← Importação de JSON/XLSX padrão
 │   └── utils.py                       ← Helpers (formatação BR, parsing números)
 ├── schemas/
@@ -201,6 +217,56 @@ Lista unificada, ordenada por data (mais recente primeiro).
 | Pré Fixado / Pré-fixado split | Grafias diferentes XP vs BTG | Unificado em MAPA_ESTRATEGIA |
 | Retorno Absoluto (MM) | BTG classifica assim | Mapeado para Multimercado |
 | meta.cliente = parceiro | XP não mostra titular | `meta.cliente = null` para XP |
+| CDI projeção = quase zero | Série 12 retorna taxa DIÁRIA (não anual) | `daily = taxa_pct / 100` |
+| IPCA BACEN retorna 400 | Endpoint `/ultimos/N` inválido para série 433 | Usar range de datas explícitas |
+| "V8 Mercury CI" sem projeção | "CI" não estava no padrão de fundos | Adicionar `CI` ao `_FUND_PATTERN` |
+| IPCA+ classificado como prefixado | Regex `IPC[A-]?` não captura "IPC-A" | Regex corrigido: `IPC(?:-?A)?` |
+
+## Módulo de Projeção Pro-Rata-Die (market_data/ + enricher + projector)
+
+> Implementado em 2026-03-14. Projeta posições para D0 sem necessidade de novo PDF.
+
+### Conceito
+
+Usar o saldo do último relatório como âncora confiável (já inclui histórico, IR, IOF, movimentações) e projetar apenas os dias desde o relatório até hoje com taxas de mercado reais.
+
+### Fato crítico — BACEN série 12
+
+**A série 12 retorna taxa CDI DIÁRIA em %, não anual.**
+- Valor `0.055131` = 0,055131% ao dia ≈ 14,9% a.a.
+- Uso correto: `daily_rate = valor / 100.0`
+- **NÃO** aplicar `(1 + taxa/100)^(1/252)` — seria dobrar a conversão
+
+### Tipos de projeção e fórmulas
+
+| tipo_projecao | Fórmula | Fonte dos dados |
+|---------------|---------|----------------|
+| `cdi_pct` | `VA × ∏(1 + cdi_dia × pct/100)` por dia útil | BACEN série 12 |
+| `cdi_spread` | `VA × ∏(1 + cdi_dia + spread_diario)` | BACEN série 12 |
+| `ipca_spread` | `VA × fator_ipca × (1+spread)^(du/252)` | BACEN série 433 |
+| `prefixado` | `VA × (1+taxa)^(du/252)` | Sem API |
+| `fundo_cota` | `VA / cota_ancora × cota_hoje` | CVM inf_diario |
+| `rv_preco` | `VA / preco_ancora × preco_hoje` | brapi.dev / yfinance |
+| `sem_projecao` | Exibir âncora | — |
+
+### Resolver — prioridade das regras (ordem importa)
+
+1. CDI %: `r"(\d+[,.]?\d*)\s*%\s*(?:DO\s+)?(?:CDI|DI)\b"` — "92,00% CDI"
+2. IPCA+: `r"IPC(?:-?A)?\s*\+\s*([\d,]+)%"` — **`(?:-?A)?` cobre IPC-A e IPCA**
+3. CDI+spread: `r"(?:CDI|DI)\s*\+\s*([\d,]+)%"` — "CDI + 0,50%"
+4. Fundo: `r"\b(?:FIC|FIF|FIDC|FIA|FIRF|FICF|FUNDO|FUND|FIAGRO|FIP|CI)\b"` — **CI = Capital Investimento**
+5. Ticker B3: `r"\b([A-Z]{4}\d{1,2})\b"` — ações e FIIs
+6. Prefixado (fim da string): `r"[-–]\s*(\d{1,2}[,.]?\d+)%(?:\s*a\.?a\.?)?\s*$"` — "- 12,25%"
+
+### Cobertura validada em produção
+
+Jose Mestrener / XP 3245269 / 26 ativos → **100% cobertura** sem CVM:
+- 15 fundos (fundo_cota), 7 IPCA+ (ipca_spread), 3 prefixados, 1 CDI%
+
+### Cache SQLite (`data/market_data/market_cache.db`)
+
+- `resolved_assets.override_manual = 1` protege correções manuais de sobrescrita
+- Limpar resoluções para re-testar: `DELETE FROM resolved_assets` no SQLite
 
 ## Histórico de decisões
 
@@ -215,14 +281,17 @@ Lista unificada, ordenada por data (mais recente primeiro).
 9. 23 categorias de fundos implementadas e removidas — não reimplementar sem pedido
 10. **IA é ferramenta de exceção** — fluxo principal usa parsers determinísticos (custo zero)
 11. **Streamlit Community Cloud** como plataforma de deploy (gratuito)
+12. **Projeção D0 é estimativa declarada** — nunca exibir como dado real, sempre rotular
+13. **BACEN série 12 = taxa DIÁRIA** — não converter de anual para diária (já é diária)
+14. **Resolver persiste no SQLite** — `override_manual=1` protege correções manuais
 
 ## Clientes processados
 
 | Cliente | Contas | Patrimônio Total | Ativos | Status |
 |---------|--------|-----------------|--------|--------|
-| Jose Mestrener | XP 3245269, XP 8660669, BTG 4016217, BTG 4019474 | R$ 4.902.064,78 | 100 | ✅ Extraído via IA e consolidado |
+| Jose Mestrener | XP 3245269, XP 8660669, BTG 4016217, BTG 4019474 | R$ 4.902.064,78 | 100 | ✅ Extraído, consolidado, projeção D0 testada |
 | Cid e Tania | XP 14522738, XP 3476739, BTG 5058054, BTG 5165904 | (a validar) | (a validar) | ✅ Extraído via IA |
 
 ## Fase atual
-**Fase 1:** Implementar parsers determinísticos para XP e BTG, validar contra JSONs existentes.
-Consultar `plano_consolidador_v3.md` para cronograma completo.
+**Fase 2 completa:** Parsers XP e BTG funcionais + UI v2 + módulo pro-rata-die implementado.
+Próximo: popular CNPJs de fundos via CVM fuzzy match (`use_cvm=True`) para cobertura 100% na projeção.
