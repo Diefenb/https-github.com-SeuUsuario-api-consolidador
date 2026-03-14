@@ -901,6 +901,216 @@ def _view_dashboard():
             _reset_state()
             st.rerun()
 
+    # ── Rentabilidade Diária ──────────────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        "<div class='section-title'>Rentabilidade Diária — Histórico Consolidado</div>",
+        unsafe_allow_html=True,
+    )
+    _section_rentabilidade_diaria(dados)
+
+
+# =============================================================================
+# RENTABILIDADE DIÁRIA — GRÁFICO + TABELA
+# =============================================================================
+
+def _section_rentabilidade_diaria(dados: dict):
+    """
+    Reconstrói o histórico diário do portfólio consolidado a partir dos dados
+    mensais do relatório (evolucao_patrimonial) e exibe:
+      - Métricas resumo do período
+      - Gráfico de linha com duas abas: PL (R$) e Rentabilidade Acumulada (%)
+      - Tabela detalhada dia-a-dia (expansível)
+    """
+    evolucao_por_conta = dados.get("evolucao_por_conta", []) or []
+    if not evolucao_por_conta:
+        st.info("Sem dados de evolução patrimonial para reconstrução diária.")
+        return
+
+    try:
+        from historico import reconstruct_daily
+    except ImportError:
+        st.warning("Módulo `historico` não encontrado. Verifique o caminho do sys.path.")
+        return
+
+    with st.spinner("Reconstruindo histórico diário…"):
+        registros = reconstruct_daily(evolucao_por_conta)
+
+    if not registros:
+        st.info("Dados insuficientes para reconstrução diária (mínimo: 1 mês com patrimônio inicial e final).")
+        return
+
+    # ── Métricas do período ───────────────────────────────────────────────────
+    data_ini   = registros[0]["data"]
+    data_fim   = registros[-1]["data"]
+    pl_final   = registros[-1]["pl"]
+    acum_pct   = registros[-1]["rent_acum_pct"]
+    total_rs   = sum(r["rent_dia_rs"] for r in registros)
+    n_dias     = len(registros)
+
+    try:
+        d_ini_fmt = f"{data_ini[8:10]}/{data_ini[5:7]}/{data_ini[:4]}"
+        d_fim_fmt = f"{data_fim[8:10]}/{data_fim[5:7]}/{data_fim[:4]}"
+    except Exception:
+        d_ini_fmt, d_fim_fmt = data_ini, data_fim
+
+    sinal_acum = "+" if acum_pct >= 0 else ""
+    sinal_rs   = "+" if total_rs >= 0 else ""
+    cor_acum   = _C["positive"] if acum_pct >= 0 else _C["negative"]
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("PL Final (R$)", _brl(pl_final))
+    with c2:
+        st.metric(
+            "Rent. Acumulada",
+            f"{sinal_acum}{acum_pct:.2f}%".replace(".", ","),
+        )
+    with c3:
+        st.metric(
+            "Ganho Total (R$)",
+            f"{sinal_rs}R$ {abs(total_rs):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        )
+    with c4:
+        st.metric("Dias Úteis", f"{n_dias}")
+
+    st.markdown(
+        f"<p style='font-size:12px;color:{_C['text_muted']};margin:-4px 0 12px 0'>"
+        f"Período: {d_ini_fmt} → {d_fim_fmt} &nbsp;|&nbsp; "
+        f"Interpolação geométrica intra-mês — âncoras reais do relatório da corretora."
+        f"</p>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Gráfico ───────────────────────────────────────────────────────────────
+    datas     = [r["data"] for r in registros]
+    pls       = [r["pl"]   for r in registros]
+    acum_vals = [r["rent_acum_pct"] for r in registros]
+
+    # Customdata para hover: [pl, rent_dia_rs, rent_dia_pct, rent_acum_pct]
+    custom = [
+        [r["pl"], r["rent_dia_rs"], r["rent_dia_pct"], r["rent_acum_pct"]]
+        for r in registros
+    ]
+
+    tab_pl, tab_acum = st.tabs(["Patrimônio Líquido (R$)", "Rentabilidade Acumulada (%)"])
+
+    with tab_pl:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=datas,
+            y=pls,
+            mode="lines",
+            name="PL",
+            line=dict(color=_C["chart_line"], width=2),
+            fill="tozeroy",
+            fillcolor=_C["chart_fill"],
+            customdata=custom,
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "PL: <b>R$ %{customdata[0]:,.2f}</b><br>"
+                "Var. Dia: R$ %{customdata[1]:,.2f} (%{customdata[2]:.4f}%)<br>"
+                "Acumulado: %{customdata[3]:.2f}%"
+                "<extra></extra>"
+            ),
+        ))
+        fig.update_layout(
+            height=380,
+            margin=dict(l=0, r=0, t=12, b=0),
+            paper_bgcolor="#FFFFFF",
+            plot_bgcolor="#FFFFFF",
+            xaxis=dict(
+                showgrid=False,
+                tickfont=dict(size=11, color=_C["neutral"]),
+                type="date",
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor=_C["chart_grid"],
+                tickfont=dict(size=11, color=_C["neutral"]),
+                tickformat=",.0f",
+                tickprefix="R$ ",
+            ),
+            showlegend=False,
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    with tab_acum:
+        cor_linha = _C["positive"] if acum_pct >= 0 else _C["negative"]
+        fill_cor  = "rgba(22,163,74,0.07)" if acum_pct >= 0 else "rgba(220,38,38,0.07)"
+
+        fig2 = go.Figure()
+        fig2.add_shape(
+            type="line",
+            x0=datas[0], x1=datas[-1], y0=0, y1=0,
+            line=dict(color=_C["neutral"], width=1, dash="dot"),
+        )
+        fig2.add_trace(go.Scatter(
+            x=datas,
+            y=acum_vals,
+            mode="lines",
+            name="Acumulado",
+            line=dict(color=cor_linha, width=2),
+            fill="tozeroy",
+            fillcolor=fill_cor,
+            customdata=custom,
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "Acumulado: <b>%{customdata[3]:.2f}%</b><br>"
+                "PL: R$ %{customdata[0]:,.2f}<br>"
+                "Var. Dia: R$ %{customdata[1]:,.2f} (%{customdata[2]:.4f}%)"
+                "<extra></extra>"
+            ),
+        ))
+        fig2.update_layout(
+            height=380,
+            margin=dict(l=0, r=0, t=12, b=0),
+            paper_bgcolor="#FFFFFF",
+            plot_bgcolor="#FFFFFF",
+            xaxis=dict(
+                showgrid=False,
+                tickfont=dict(size=11, color=_C["neutral"]),
+                type="date",
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor=_C["chart_grid"],
+                tickfont=dict(size=11, color=_C["neutral"]),
+                ticksuffix="%",
+                tickformat=".2f",
+            ),
+            showlegend=False,
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+
+    # ── Tabela detalhada ──────────────────────────────────────────────────────
+    with st.expander("Detalhamento Diário", expanded=False):
+        rows = []
+        for r in reversed(registros):  # mais recente primeiro
+            sinal = "+" if r["rent_dia_pct"] >= 0 else ""
+            rows.append({
+                "Data":           r["data"],
+                "PL (R$)":        r["pl"],
+                "Var. Dia (R$)":  r["rent_dia_rs"],
+                "Var. Dia (%)":   r["rent_dia_pct"],
+                "Acumulado (%)":  r["rent_acum_pct"],
+            })
+
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Data":          st.column_config.DateColumn("Data",          format="DD/MM/YYYY"),
+                "PL (R$)":       st.column_config.NumberColumn("PL (R$)",       format="R$ %.2f"),
+                "Var. Dia (R$)": st.column_config.NumberColumn("Var. Dia (R$)", format="R$ %.2f"),
+                "Var. Dia (%)":  st.column_config.NumberColumn("Var. Dia (%)",  format="%.4f%%"),
+                "Acumulado (%)": st.column_config.NumberColumn("Acumulado (%)", format="%.2f%%"),
+            },
+        )
+
 
 # =============================================================================
 # UTILITÁRIOS DE ESTADO
