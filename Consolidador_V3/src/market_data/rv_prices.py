@@ -164,3 +164,50 @@ def fetch_price_pair(
             cache.set_preco(ticker, ancora_iso, preco_ancora)
 
     return preco_ancora, preco_hoje
+
+
+def fetch_price_series(
+    ticker: str,
+    data_inicio: date,
+    data_fim: date,
+    cache: Optional[SQLiteCache] = None,
+) -> dict[str, float]:
+    """
+    Retorna série completa de preços de fechamento para o ticker.
+    Tenta cache → yfinance (full history in one call) → brapi fallback.
+
+    Returns:
+        {date_iso: preco_fechamento}
+    """
+    if cache is None:
+        cache = SQLiteCache()
+
+    # Verificar cache
+    cached = cache.get_precos_range(ticker, data_inicio.isoformat(), data_fim.isoformat())
+    dias_esperados = max(1, (data_fim - data_inicio).days * 5 // 7)
+    if len(cached) >= dias_esperados * 0.8:
+        return cached
+
+    # Tentar yfinance (retorna série completa em uma chamada)
+    try:
+        import yfinance as yf
+        tk = yf.Ticker(f"{ticker}.SA")
+        hist = tk.history(
+            start=data_inicio - timedelta(days=5),
+            end=data_fim + timedelta(days=1),
+            auto_adjust=True,
+        )
+        if not hist.empty:
+            serie = {}
+            for idx, row in hist.iterrows():
+                d = idx.date() if hasattr(idx, "date") else idx
+                if data_inicio <= d <= data_fim:
+                    serie[d.isoformat()] = float(row["Close"])
+            if serie:
+                cache.set_precos_bulk(ticker, serie)
+                cached.update(serie)
+                logger.info(f"yfinance: {len(serie)} preços para {ticker}")
+    except Exception as e:
+        logger.warning(f"yfinance série falhou para {ticker}: {e}")
+
+    return cached if cached else {}

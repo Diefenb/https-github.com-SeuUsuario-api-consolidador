@@ -670,6 +670,12 @@ def _processar_arquivos(uploaded_files):
                 raise ValueError(f"Formato não suportado: {ext}")
 
             norm = normalize(parsed)
+            # Enriquecer com tipo de ativo (regex only, sem CVM download)
+            try:
+                from enricher import enrich_portfolio
+                norm = enrich_portfolio(norm, use_cvm=False)
+            except Exception:
+                pass  # enriquecimento é opcional
             relatorios.append(norm)
 
             meta = norm.get("meta", {})
@@ -933,8 +939,14 @@ def _section_rentabilidade_diaria(dados: dict):
         st.warning("Módulo `historico` não encontrado. Verifique o caminho do sys.path.")
         return
 
-    with st.spinner("Reconstruindo histórico diário…"):
-        registros = reconstruct_daily(evolucao_por_conta)
+    with st.spinner("Reconstruindo histórico diário com dados reais de mercado…"):
+        try:
+            from historico import reconstruct_from_assets
+            registros = reconstruct_from_assets(dados)
+        except Exception as e:
+            logger.warning(f"reconstruct_from_assets falhou: {e}, usando fallback")
+            from historico import reconstruct_daily
+            registros = reconstruct_daily(evolucao_por_conta)
 
     if not registros:
         st.info("Dados insuficientes para reconstrução diária (mínimo: 1 mês com patrimônio inicial e final).")
@@ -977,7 +989,7 @@ def _section_rentabilidade_diaria(dados: dict):
     st.markdown(
         f"<p style='font-size:12px;color:{_C['text_muted']};margin:-4px 0 12px 0'>"
         f"Período: {d_ini_fmt} → {d_fim_fmt} &nbsp;|&nbsp; "
-        f"Interpolação geométrica intra-mês — âncoras reais do relatório da corretora."
+        f"Dados reais: CDI BACEN, IPCA BACEN, NAVs CVM (fundos), yfinance (ações/FIIs)."
         f"</p>",
         unsafe_allow_html=True,
     )

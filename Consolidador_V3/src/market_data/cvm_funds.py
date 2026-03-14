@@ -269,3 +269,44 @@ def fetch_fund_nav(
                 break
 
     return cota_ancora, cota_hoje
+
+
+def fetch_fund_nav_series(
+    cnpj: str,
+    data_inicio: date,
+    data_fim: date,
+    cache: Optional[SQLiteCache] = None,
+) -> dict[str, float]:
+    """
+    Retorna série completa de NAVs para o CNPJ entre data_inicio e data_fim.
+    Usa cache SQLite; baixa apenas os meses ausentes da CVM.
+
+    Returns:
+        {date_iso: nav_value}  ex: {"2025-11-03": 42.1234, ...}
+    """
+    if cache is None:
+        cache = SQLiteCache()
+
+    # Determinar meses necessários
+    meses = set()
+    d = date(data_inicio.year, data_inicio.month, 1)
+    while d <= data_fim:
+        meses.add((d.year, d.month))
+        if d.month == 12:
+            d = date(d.year + 1, 1, 1)
+        else:
+            d = date(d.year, d.month + 1, 1)
+
+    # Para cada mês, verificar cache e baixar se necessário
+    for ano, mes in sorted(meses):
+        primeiro_dia = date(ano, mes, 1)
+        # Checar se já temos dados no cache para este mês/CNPJ
+        cached = cache.get_cotas_range(cnpj, primeiro_dia.isoformat(), date(ano, mes, 28).isoformat())
+        if not cached:
+            logger.info(f"Baixando cotas CVM {ano}/{mes:02d} para {cnpj}")
+            cotas = _fetch_cotas_mes(cnpj, ano, mes)
+            if cotas:
+                cache.set_cotas_bulk(cnpj, cotas)
+
+    # Ler série completa do cache
+    return cache.get_cotas_range(cnpj, data_inicio.isoformat(), data_fim.isoformat())

@@ -139,6 +139,25 @@ class SQLiteCache:
     #  precos_rv                                                           #
     # ------------------------------------------------------------------ #
 
+    def get_precos_range(self, ticker: str, data_ini: str, data_fim: str) -> dict[str, float]:
+        """Retorna {date_iso: preco} para o ticker no intervalo."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT data, fechamento FROM precos_rv "
+                "WHERE ticker=? AND data>=? AND data<=? ORDER BY data",
+                (ticker, data_ini, data_fim),
+            ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def set_precos_bulk(self, ticker: str, serie: dict[str, float]) -> None:
+        """Salva múltiplos preços de uma vez."""
+        from datetime import date as _date
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO precos_rv (ticker, data, fechamento, updated_at) VALUES (?,?,?,?)",
+                [(ticker, d, v, _date.today().isoformat()) for d, v in serie.items()],
+            )
+
     def get_preco(self, ticker: str, data: str) -> Optional[float]:
         with self._conn() as conn:
             row = conn.execute(
