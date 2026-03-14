@@ -295,25 +295,32 @@ b03bb2f docs: update SESSION_CONTEXT with UI v2 progress and deploy instructions
 
 ## 17. Módulo de Rentabilidade Histórica Diária — Referência técnica completa
 
-> Implementado em 2026-03-14. Reconstrói o valor diário histórico do portfólio consolidado a partir das âncoras mensais reais do relatório da corretora.
+> Implementado em 2026-03-14 e aperfeiçoado com dados reais de mercado por ativo.
 
 ### 17.1 Conceito central
 
-**O problema que resolve:** Os relatórios da corretora são mensais. Para plotar um gráfico de rentabilidade com granularidade diária que mostre a volatilidade real do portfólio, é necessário reconstruir os valores intermediários entre os pontos mensais conhecidos.
+Reconstrói o valor diário histórico do portfólio **retroagindo da data âncora** (último relatório da corretora). Para cada ativo, aplica o inverso das taxas/preços/NAVs reais de cada dia útil:
 
-**A solução:**
 ```
-[patrimonio_inicial Jan]  →  [dia a dia interpolado]  →  [patrimonio_final Jan]  (âncora real)
-[patrimonio_inicial Fev]  →  [dia a dia interpolado]  →  [patrimonio_final Fev]  (âncora real)
-...
+saldo[D-1] = saldo[D] / (1 + taxa_real_D)
 ```
 
-Os valores de início e fim de cada mês são **exatos** (vêm do relatório da corretora). Apenas a forma da curva dentro de cada mês é estimada via interpolação geométrica — equivalente a assumir taxa diária uniforme dentro do mês.
+Somando todos os ativos por dia → PL diário consolidado com dados reais de mercado.
 
-**Fontes dos dados:**
-- `dados["evolucao_por_conta"]` — já presente no `dados_consolidados` em session state
-- Cada conta tem `evolucao_patrimonial[]` com `{data, patrimonio_inicial, patrimonio_final}`
-- O consolidador soma as contas por mês antes de interpolar
+**Fontes de dados por tipo de ativo:**
+
+| tipo_projecao | Fonte | Qualidade |
+|---|---|---|
+| `cdi_pct` | BACEN série 12 (taxa diária real) | Exato |
+| `cdi_spread` | BACEN série 12 + spread anual → diário | Exato |
+| `ipca_spread` | BACEN série 433 (IPCA mensal/du_mes) + spread | Alta |
+| `prefixado` | Fórmula `(1+taxa)^(1/252)` | Exato |
+| `fundo_cota` | CVM inf_diario NAVs (se CNPJ disponível) | Real |
+| `rv_preco` | yfinance full history (se ticker disponível) | Real |
+| `fundo_cota` sem CNPJ | CDI fallback | Aproximado |
+| `sem_projecao` | CDI fallback | Aproximado |
+
+**Fallback em cascata:** CVM/yfinance → CDI real BACEN → 0,0555%/dia (hardcoded)
 
 ### 17.2 `historico.py` — Módulo de reconstrução
 
@@ -321,44 +328,56 @@ Os valores de início e fim de cada mês são **exatos** (vêm do relatório da 
 
 **Função principal:**
 ```python
-from historico import reconstruct_daily
+from historico import reconstruct_from_assets
 
-registros = reconstruct_daily(evolucao_por_conta)
-# Retorna: [{"data": "YYYY-MM-DD", "pl": float, "rent_dia_rs": float,
-#            "rent_dia_pct": float, "rent_acum_pct": float}, ...]
+registros = reconstruct_from_assets(dados_consolidados, cache=cache)
+# dados_consolidados precisa ter:
+#   - data_referencia: str (âncora)
+#   - ativos_consolidados: list com _projecao em cada ativo
+#   - evolucao_por_conta: list (para determinar data_inicio)
+# Retorna: [{"data", "pl", "rent_dia_rs", "rent_dia_pct", "rent_acum_pct"}, ...]
 ```
 
-**Algoritmo em 4 passos:**
-1. **Consolidar por mês:** Soma `patrimonio_inicial` e `patrimonio_final` de todas as contas por mês (`YYYY-MM`)
-2. **Listar dias úteis:** Tenta `bizdays/ANBIMA`; fallback Seg-Sex sem feriados
-3. **Interpolar geometricamente:** `PL_d = P0 × (Pf/P0)^(d/n)` — o último dia é forçado ao valor exato `Pf` para eliminar erros de ponto flutuante
-4. **Calcular métricas:** `rent_dia_rs`, `rent_dia_pct` (vs. dia anterior), `rent_acum_pct` (vs. P0 do primeiro mês)
+**Algoritmo:**
+1. `data_ancora` = `dados["data_referencia"]` (data do último relatório)
+2. `data_inicio` = primeiro dia do mês mais antigo em `evolucao_patrimonial` (~12 meses)
+3. Busca CDI (BACEN série 12) e IPCA (BACEN série 433) para o período completo
+4. Para fundos com CNPJ: busca série de NAVs via CVM inf_diario mensal (ZIPs)
+5. Para ações/FIIs com ticker: busca série de preços via yfinance `.history()`
+6. Para cada ativo: `_reconstruir_ativo()` retrocede dia-a-dia aplicando taxa inversa
+7. Soma todos os ativos por dia útil → série diária de PL consolidado
 
-**Fórmula de interpolação:**
+**Fórmulas de retroação:**
 ```python
-taxa_diaria = (pf / p0) ** (1 / n) - 1
-pl_dia_d = p0 * (1 + taxa_diaria) ** d
+# CDI %:     saldo[D-1] = saldo[D] / (1 + cdi_D/100 * pct/100)
+# CDI+spread: saldo[D-1] = saldo[D] / (1 + cdi_D/100 + (1+spread/100)^(1/252)-1)
+# IPCA+spread: taxa_ipca = (1+ipca_M/100)^(1/du_M) - 1  por dia útil do mês
+#              saldo[D-1] = saldo[D] / (1 + taxa_ipca + taxa_spread)
+# Prefixado:  saldo[D-1] = saldo[D] / (1 + taxa_aa/100)^(1/252)
+# Fundo:      saldo[D-1] = saldo[D] * (nav[D-1] / nav[D])
+# RV:         saldo[D-1] = saldo[D] * (price[D-1] / price[D])
 ```
 
-**Resultado validado (XP 3245269, Nov/25 → Jan/26):**
-- 65 dias úteis reconstruídos
-- Último dia (2026-01-30): `R$ 1.826.076,84` — bate exato com o relatório
-- Rentabilidade acumulada: `3,6946%` — matematicamente correto vs. `(1.826.076,84 / 1.761.014,24 - 1)`
+**Fallback mensal** (`_fallback_mensal`): quando ativos não têm `_projecao`, usa interpolação geométrica entre âncoras mensais de `evolucao_patrimonial` (método original). Alias `reconstruct_daily()` mantido para compatibilidade.
 
 ### 17.3 Integração com `app.py`
 
-**Fluxo:**
+**Enriquecimento automático no processamento:**
 ```python
-# Processamento (já existente):
-relatorios, hist, erros = _processar_arquivos(uploaded_files)
-dados = consolidate(reports=relatorios, ...)   # dados["evolucao_por_conta"] vem daqui
-
-# No dashboard (nova seção):
-_section_rentabilidade_diaria(dados)
-# → chama reconstruct_daily(dados["evolucao_por_conta"]) internamente
+# Em _processar_arquivos(), após normalize():
+from enricher import enrich_portfolio
+norm = enrich_portfolio(norm, use_cvm=False)  # regex only, rápido
+# _projecao é adicionado a cada ativo → preservado pelo deepcopy do consolidator
+# → disponível em dados["ativos_consolidados"][i]["_projecao"]
 ```
 
-**Nenhuma dependência adicional de session state** — tudo vem de `dados_consolidados` que já estava salvo.
+**Reconstruct no dashboard:**
+```python
+# _section_rentabilidade_diaria(dados):
+from historico import reconstruct_from_assets
+registros = reconstruct_from_assets(dados)
+# Fallback automático para reconstruct_daily() em caso de erro
+```
 
 **Posição no dashboard:**
 ```
@@ -367,11 +386,12 @@ Cards de métricas
 ↓ Patrimônio por Conta | Alocação por Estratégia
 ↓ Download Excel | Nova Importação
 ↓ [DIVIDER]
-↓ Rentabilidade Diária — Histórico Consolidado   ← NOVA SEÇÃO
+↓ Rentabilidade Diária — Histórico Consolidado
     ↓ Métricas: PL Final | Rent. Acumulada | Ganho Total | Dias Úteis
+    ↓ Nota: "Dados reais: CDI BACEN, IPCA BACEN, NAVs CVM, yfinance (ações/FIIs)"
     ↓ Tab "Patrimônio Líquido (R$)" — linha azul com área fill
     ↓ Tab "Rentabilidade Acumulada (%)" — linha verde/vermelha + baseline zero
-    ↓ Expander "Detalhamento Diário" — tabela com colunas:
+    ↓ Expander "Detalhamento Diário" — tabela:
         Data | PL (R$) | Var. Dia (R$) | Var. Dia (%) | Acumulado (%)
 ```
 
