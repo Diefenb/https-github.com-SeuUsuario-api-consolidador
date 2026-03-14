@@ -6,7 +6,7 @@
 
 ## 1. O que é este projeto
 
-Sistema de consolidação de carteiras de investimentos para assessores financeiros da **API Capital / Capital Investimentos**. Processa relatórios PDF de corretoras (XP e BTG), extrai dados, normaliza, consolida múltiplas contas de um mesmo cliente e gera relatório Excel. A partir de 2026-03-14, projeta posições para D0 usando taxas de mercado reais.
+Sistema de consolidação de carteiras de investimentos para assessores financeiros da **API Capital / Capital Investimentos**. Processa relatórios PDF de corretoras (XP e BTG), extrai dados, normaliza, consolida múltiplas contas de um mesmo cliente e gera relatório Excel. A partir de 2026-03-14, inclui módulo de reconstrução histórica diária para plotar gráfico de rentabilidade com granularidade dia-a-dia.
 
 **Usuário:** Gabriel (gabidiefenbach@gmail.com)
 **Pasta do projeto:** `/Consolidador/` (pasta selecionada no Cowork)
@@ -17,7 +17,7 @@ Sistema de consolidação de carteiras de investimentos para assessores financei
 
 **SOMENTE DADOS REAIS.** Todo número no relatório final deve ter origem rastreável em um PDF de corretora. Zero cálculos implícitos de rentabilidade. Zero estimativas. Campo sem dados = null. O relatório da corretora é soberano.
 
-> **Exceção explícita:** O módulo de projeção pro-rata-die (seção 17) é uma estimativa declarada, sempre rotulada como "Estimativa — não substitui o relatório oficial".
+> **Exceção explícita:** O módulo de reconstrução histórica (`historico.py`) usa interpolação geométrica intra-mês entre âncoras reais mensais da corretora. Só os pontos intermediários (dentro de cada mês) são estimados; os valores de início e fim de cada mês são exatos.
 
 ---
 
@@ -29,9 +29,9 @@ XP PDF  ──→ Parser Determinístico (pdfplumber) ──→ JSON canônico �
 BTG PDF ──→ Parser Determinístico (pdfplumber) ──→ JSON canônico ─┤──→ Consolidador ──→ Excel
 JSON/XLSX importado manualmente ──────────────────────────────────┘
 
-FLUXO PRO-RATA-DIE (novo — atualização diária sem PDF):
-JSON canônico ──→ Enricher (resolve tipo de ativo) ──→ Projector ──→ Saldo estimado D0
-                  (regex nome + CVM fuzzy match)      (taxas BACEN/CVM/brapi)
+FLUXO HISTÓRICO DIÁRIO (novo — gráfico de rentabilidade):
+dados["evolucao_por_conta"] ──→ historico.reconstruct_daily() ──→ série diária
+(âncoras mensais reais da corretora)   (interpolação geométrica intra-mês)
 
 FLUXO EXCEÇÃO (com IA, sob demanda, ~R$0,50–1,50/PDF):
 PDF de corretora nova ──→ Claude API (Sonnet) ──→ JSON canônico ──→ entra no fluxo principal
@@ -44,30 +44,28 @@ PDF de corretora nova ──→ Claude API (Sonnet) ──→ JSON canônico ─
 ```
 Consolidador/
 ├── SESSION_CONTEXT.md             ← ESTE ARQUIVO (atualizar a cada sessão)
-├── app.py                         ← Streamlit web app (~955 linhas, UI v2 + seção D0 ✅)
+├── app.py                         ← Streamlit web app (~1100 linhas, UI v2 + histórico diário ✅)
 ├── consolidar.py                  ← CLI alternativo
 ├── requirements.txt               ← inclui rapidfuzz, bizdays, yfinance (pós 2026-03-14)
 ├── .env                           ← ANTHROPIC_API_KEY (não tocar, não recriar)
 │
 ├── Consolidador_V3/               ← VERSÃO ATIVA DO CÓDIGO
 │   ├── CLAUDE.md                  ← doc técnica V3 (sempre ler ao iniciar)
-│   ├── plano_consolidador_v3.md
-│   ├── plano_ui_v2.md
-│   ├── plano_biblioteca_dados_prorata.md  ← plano original do módulo pro-rata-die
 │   ├── src/
 │   │   ├── parsers/
 │   │   │   ├── __init__.py        ← detect_and_parse() — detecta por conteúdo, 2 páginas
 │   │   │   ├── xp_performance.py  ← parse_xp_performance() — 707 linhas ✅
 │   │   │   └── btg_performance.py ← parse_btg_performance() — ~500 linhas ✅
-│   │   ├── market_data/           ← NOVO — módulo de dados de mercado (2026-03-14)
+│   │   ├── market_data/           ← módulo de dados de mercado (2026-03-14)
 │   │   │   ├── __init__.py        ← expõe get_cache(), fetch_cdi_range(), fetch_ipca_ultimos()
 │   │   │   ├── cache.py           ← SQLiteCache — 4 tabelas com TTL
 │   │   │   ├── bacen.py           ← BACEN SGS série 12 (CDI) e 433 (IPCA)
 │   │   │   ├── cvm_funds.py       ← cotas CVM + cadastral + fuzzy match CNPJ
 │   │   │   ├── rv_prices.py       ← preços ações/FIIs via brapi.dev + yfinance
 │   │   │   └── resolver.py        ← resolução nome → tipo_projecao + parâmetros
-│   │   ├── enricher.py            ← NOVO — orquestra resolução + persiste JSON enriquecido
-│   │   ├── projector.py           ← NOVO — cálculo pro-rata-die para D0
+│   │   ├── historico.py           ← NOVO — reconstrução diária a partir de âncoras mensais ✅
+│   │   ├── enricher.py            ← orquestra resolução de tipo de ativo + persiste JSON
+│   │   ├── projector.py           ← fórmulas de projeção (CDI, IPCA, prefixado, fundo, RV)
 │   │   ├── consolidator.py        ← agregação entre contas
 │   │   ├── normalizer.py          ← normalize_strategy() + clean_asset_name()
 │   │   ├── report_generator.py    ← geração Excel 6 abas (523 linhas)
@@ -78,13 +76,11 @@ Consolidador/
 │       ├── xp_3245269_v3.json     ← Jose Mestrener / XP (26 ativos, R$1.826.076)
 │       └── xp_8660669_v3.json     ← Jose Mestrener / XP (7 ativos, R$296.706)
 │
-├── data/                          ← NOVO — cache e posições enriquecidas (2026-03-14)
+├── data/                          ← cache e posições (não commitar)
 │   ├── market_data/
 │   │   ├── market_cache.db        ← SQLite: taxas CDI/IPCA, cotas CVM, preços RV, resoluções
 │   │   └── cvm_cadastral_cache.csv ← cadastral CVM (refresh < 7 dias, ~50MB)
-│   └── posicoes/                  ← JSON enriquecidos por cliente (âncora + metadados)
-│       ├── jose_mestrener_posicoes.json  (gerado ao salvar via enricher.salvar_posicoes)
-│       └── ...
+│   └── posicoes/                  ← JSON enriquecidos por cliente
 │
 └── output/
     ├── consolidado_jose_2026-01.xlsx
@@ -97,7 +93,7 @@ Consolidador/
 
 | Cliente | Contas | Patrimônio Total | Status |
 |---------|--------|-----------------|--------|
-| Jose Goncalves Mestrener Junior | XP 3245269, XP 8660669, BTG 4016217, BTG 4019474 | R$ 4.902.064,78 | ✅ Excel + projeção D0 testada |
+| Jose Goncalves Mestrener Junior | XP 3245269, XP 8660669, BTG 4016217, BTG 4019474 | R$ 4.902.064,78 | ✅ Excel + histórico diário ✅ |
 | Cid e Tania | XP 14522738, XP 3476739, BTG 5058054, BTG 5165904 | (a validar) | ✅ Excel gerado |
 
 ---
@@ -111,14 +107,12 @@ Campos principais de cada JSON extraído:
 - `estatistica_historica` — meses +/-, volatilidade, retorno max/min
 - `composicao_por_estrategia` — saldo e rentabilidade por estratégia
 - `rentabilidade_historica_mensal` — tabela ano × mês (portfólio % e %CDI)
-- `evolucao_patrimonial` — tabela mensal com patrimônio inicial/final, IR, IOF
+- `evolucao_patrimonial` — **tabela mensal com patrimônio_inicial, patrimônio_final, IR, IOF** ← âncoras do histórico diário
 - `ativos` — lista detalhada com saldo, qtd, % alocação, rentabilidades
 - `movimentacoes` — histórico de entradas/saídas
 
-**Campos adicionados pelo módulo de projeção (nunca persistir no JSON canônico original):**
+**Campos adicionados pelo enricher (não persistir no JSON canônico original):**
 - `ativos[i]._projecao` — tipo_projecao, pct_cdi, spread_aa, taxa_prefixada_aa, cnpj, ticker, confianca
-- `ativos[i]._proj_resultado` — saldo_projetado, variacao_rs, variacao_pct, metodo, detalhe
-- `projecao_d0` — pl_ancora, pl_estimado, variacao_rs, variacao_pct, dias_uteis_projetados, cobertura_pct
 
 ---
 
@@ -135,7 +129,7 @@ Campos principais de cada JSON extraído:
 9. **`consolidado.json` não vai dentro de `extractions/`** — gera conta fantasma
 10. **Deploy: Streamlit Community Cloud** (gratuito, conectar GitHub)
 11. **Modelo IA:** `claude-sonnet-4-5-20250929` (Sonnet, não Opus — custo/benefício)
-12. **Projeção D0: estimativa declarada** — toda exibição deve ter aviso "Estimativa — não substitui relatório oficial"
+12. **Projeção D0 removida da UI** — substituída por reconstrução histórica dia-a-dia (seção 17)
 13. **BACEN série 12 retorna taxa DIÁRIA em %** (ex: 0.055131% ao dia ≈ 14,9% a.a.) — NÃO é taxa anual
 
 ---
@@ -198,6 +192,7 @@ FIIs (tickers XXXX11) → reclassificar de "Renda Variável" para `Fundos Listad
 | Relatório output | Excel (openpyxl) |
 | Gráficos interativos | Plotly 6.x |
 | Interface web | Streamlit 1.54 |
+| Reconstrução histórica diária | `historico.py` — interpolação geométrica intra-mês |
 | Cache de mercado | SQLite local (`data/market_data/market_cache.db`) |
 | CDI diário | BACEN SGS API — série 12 (gratuito, sem auth) |
 | IPCA mensal | BACEN SGS API — série 433 (gratuito, sem auth) |
@@ -229,12 +224,13 @@ FIIs (tickers XXXX11) → reclassificar de "Renda Variável" para `Fundos Listad
 | 2 | Parser BTG completo | ✅ Feito | ~500 linhas, state machine |
 | 3 | Nova UI — sidebar, cards, gráficos | ✅ Feito | app.py, Plotly |
 | 4 | Deploy Streamlit Community Cloud | ✅ Feito | GitHub conectado |
-| 5 | Módulo pro-rata-die — posições D0 | ✅ Implementado | Sprints 1-4 completos |
-| 6 | CVM fuzzy match CNPJ para fundos | 🔶 Parcial | Código pronto, CNPJ não populado para José Mestrener |
-| 7 | Tabela rentabilidade Excel (visual) | Alta | Implementada, não validada com BTG |
-| 8 | Área de remoção de ativos (PL parcial) | Média | UI para excluir ativos antes de consolidar |
-| 9 | Gráficos embutidos no Excel | Média | Charts Plotly no Excel exportado |
-| 10 | Importação de extratos via IA | Baixa | Além dos relatórios mensais |
+| 5 | Módulo market_data (BACEN, CVM, brapi) | ✅ Implementado | Infra de dados pronta |
+| 6 | Reconstrução histórica diária + gráfico | ✅ Feito | historico.py + _section_rentabilidade_diaria |
+| 7 | CVM fuzzy match CNPJ para fundos | 🔶 Parcial | Código pronto, CNPJ não populado para José Mestrener |
+| 8 | Tabela rentabilidade Excel (visual) | Alta | Implementada, não validada com BTG |
+| 9 | Área de remoção de ativos (PL parcial) | Média | UI para excluir ativos antes de consolidar |
+| 10 | Gráficos embutidos no Excel | Média | Charts Plotly no Excel exportado |
+| 11 | Importação de extratos via IA | Baixa | Além dos relatórios mensais |
 
 ---
 
@@ -242,16 +238,32 @@ FIIs (tickers XXXX11) → reclassificar de "Renda Variável" para `Fundos Listad
 
 **Última atualização:** 2026-03-14
 
-### Histórico de commits
+### Histórico de commits recentes
 
 ```
-(novo)  feat: implement pro-rata-die projection module with market data APIs
+e529f09 feat: add historical daily portfolio reconstruction and chart
+cfcf387 refactor: remove forward-projection UI from app.py
 8ce97e9 fix: remove illegal XML chars from BTG asset names before Excel write
 b03bb2f docs: update SESSION_CONTEXT with UI v2 progress and deploy instructions
 0a71f6f feat: redesign UI with dark sidebar, dashboard view, and Plotly charts
 98217a2 feat: implement full BTG parser and fix XP/BTG routing
-30e4143 Added Dev Container Folder
 ```
+
+### O que está funcionando agora
+
+- ✅ Parsers XP e BTG determinísticos (pdfplumber, custo zero)
+- ✅ Consolidação multi-conta com Excel 6 abas
+- ✅ UI v2 com sidebar escura, cards, gráficos Plotly
+- ✅ Deploy Streamlit Community Cloud via GitHub
+- ✅ **Gráfico de rentabilidade diária histórica** — seção "Rentabilidade Diária — Histórico Consolidado" no dashboard
+  - Métricas: PL Final, Rent. Acumulada, Ganho Total (R$), Dias Úteis
+  - 2 abas: Patrimônio Líquido (R$) e Rentabilidade Acumulada (%)
+  - Tabela expansível dia-a-dia com Var. Dia (R$), Var. Dia (%), Acumulado (%)
+- ✅ Infraestrutura market_data (BACEN, CVM, brapi, resolver, cache SQLite)
+
+### Pendências
+
+- 🔶 CVM fuzzy match CNPJ para fundos (código pronto, CNPJ não populado)
 
 ---
 
@@ -281,20 +293,91 @@ b03bb2f docs: update SESSION_CONTEXT with UI v2 progress and deploy instructions
 
 ---
 
-## 17. Módulo Pro-Rata-Die — Referência técnica completa
+## 17. Módulo de Rentabilidade Histórica Diária — Referência técnica completa
 
-> Implementado em 2026-03-14. Projeta posições para D0 usando taxas de mercado reais a partir da âncora do último relatório.
+> Implementado em 2026-03-14. Reconstrói o valor diário histórico do portfólio consolidado a partir das âncoras mensais reais do relatório da corretora.
 
 ### 17.1 Conceito central
 
+**O problema que resolve:** Os relatórios da corretora são mensais. Para plotar um gráfico de rentabilidade com granularidade diária que mostre a volatilidade real do portfólio, é necessário reconstruir os valores intermediários entre os pontos mensais conhecidos.
+
+**A solução:**
 ```
-[Saldo do último relatório]  →  [Projeção N dias com taxas reais]  →  [Estimativa D0]
-      (âncora — dado real)                                               (rotulada)
+[patrimonio_inicial Jan]  →  [dia a dia interpolado]  →  [patrimonio_final Jan]  (âncora real)
+[patrimonio_inicial Fev]  →  [dia a dia interpolado]  →  [patrimonio_final Fev]  (âncora real)
+...
 ```
 
-O saldo do relatório já incorpora toda a rentabilidade histórica, IR, IOF e movimentações. Projetamos apenas os dias entre o último relatório e hoje — tipicamente 15–45 dias. Zero risco de erros acumulados desde a compra.
+Os valores de início e fim de cada mês são **exatos** (vêm do relatório da corretora). Apenas a forma da curva dentro de cada mês é estimada via interpolação geométrica — equivalente a assumir taxa diária uniforme dentro do mês.
 
-### 17.2 Módulos e responsabilidades
+**Fontes dos dados:**
+- `dados["evolucao_por_conta"]` — já presente no `dados_consolidados` em session state
+- Cada conta tem `evolucao_patrimonial[]` com `{data, patrimonio_inicial, patrimonio_final}`
+- O consolidador soma as contas por mês antes de interpolar
+
+### 17.2 `historico.py` — Módulo de reconstrução
+
+**Localização:** `Consolidador_V3/src/historico.py`
+
+**Função principal:**
+```python
+from historico import reconstruct_daily
+
+registros = reconstruct_daily(evolucao_por_conta)
+# Retorna: [{"data": "YYYY-MM-DD", "pl": float, "rent_dia_rs": float,
+#            "rent_dia_pct": float, "rent_acum_pct": float}, ...]
+```
+
+**Algoritmo em 4 passos:**
+1. **Consolidar por mês:** Soma `patrimonio_inicial` e `patrimonio_final` de todas as contas por mês (`YYYY-MM`)
+2. **Listar dias úteis:** Tenta `bizdays/ANBIMA`; fallback Seg-Sex sem feriados
+3. **Interpolar geometricamente:** `PL_d = P0 × (Pf/P0)^(d/n)` — o último dia é forçado ao valor exato `Pf` para eliminar erros de ponto flutuante
+4. **Calcular métricas:** `rent_dia_rs`, `rent_dia_pct` (vs. dia anterior), `rent_acum_pct` (vs. P0 do primeiro mês)
+
+**Fórmula de interpolação:**
+```python
+taxa_diaria = (pf / p0) ** (1 / n) - 1
+pl_dia_d = p0 * (1 + taxa_diaria) ** d
+```
+
+**Resultado validado (XP 3245269, Nov/25 → Jan/26):**
+- 65 dias úteis reconstruídos
+- Último dia (2026-01-30): `R$ 1.826.076,84` — bate exato com o relatório
+- Rentabilidade acumulada: `3,6946%` — matematicamente correto vs. `(1.826.076,84 / 1.761.014,24 - 1)`
+
+### 17.3 Integração com `app.py`
+
+**Fluxo:**
+```python
+# Processamento (já existente):
+relatorios, hist, erros = _processar_arquivos(uploaded_files)
+dados = consolidate(reports=relatorios, ...)   # dados["evolucao_por_conta"] vem daqui
+
+# No dashboard (nova seção):
+_section_rentabilidade_diaria(dados)
+# → chama reconstruct_daily(dados["evolucao_por_conta"]) internamente
+```
+
+**Nenhuma dependência adicional de session state** — tudo vem de `dados_consolidados` que já estava salvo.
+
+**Posição no dashboard:**
+```
+Cards de métricas
+↓ Evolução Patrimonial | Rentabilidade Mês a Mês
+↓ Patrimônio por Conta | Alocação por Estratégia
+↓ Download Excel | Nova Importação
+↓ [DIVIDER]
+↓ Rentabilidade Diária — Histórico Consolidado   ← NOVA SEÇÃO
+    ↓ Métricas: PL Final | Rent. Acumulada | Ganho Total | Dias Úteis
+    ↓ Tab "Patrimônio Líquido (R$)" — linha azul com área fill
+    ↓ Tab "Rentabilidade Acumulada (%)" — linha verde/vermelha + baseline zero
+    ↓ Expander "Detalhamento Diário" — tabela com colunas:
+        Data | PL (R$) | Var. Dia (R$) | Var. Dia (%) | Acumulado (%)
+```
+
+### 17.4 Infraestrutura `market_data/` — referência
+
+Os módulos `market_data/` foram construídos para alimentar projeções futuras e poderão ser integrados ao histórico diário quando necessário (ex: usar CDI real para shape intra-mês em vez de interpolação geométrica).
 
 #### `market_data/cache.py` — SQLiteCache
 
@@ -309,9 +392,8 @@ db_path = Consolidador/data/market_data/market_cache.db
 - `resolved_assets(nome_original, tipo_projecao, cnpj, ticker, pct_cdi, spread_aa, taxa_prefixada_aa, match_score, confianca, resolved_at, override_manual)` — cache de resoluções
 
 **Boas práticas:**
-- `override_manual = 1` protege correções manuais de serem sobrescritas na próxima resolução automática
-- Cache de resoluções evita re-executar fuzzy matching a cada run
-- `get_resolved()` é chamado antes de qualquer lógica — se tiver cache com `tipo_projecao`, retorna direto
+- `override_manual = 1` protege correções manuais de serem sobrescritas
+- `get_resolved()` é chamado antes de qualquer lógica — cache evita re-executar fuzzy matching
 
 #### `market_data/bacen.py` — BACEN SGS API
 
@@ -320,201 +402,57 @@ db_path = Consolidador/data/market_data/market_cache.db
 A **série 12 (CDI) retorna taxa DIÁRIA em %**, não taxa anual.
 - Valor típico: `0.055131` = 0,055131% ao dia ≈ 14,9% a.a.
 - Para usar: `daily_rate = valor / 100` (já é diária)
-- Para 92% CDI: `fator_dia = 1 + (valor/100) * (92/100)`
 - **NÃO** usar `(1 + taxa/100)^(1/252)` — seria dobrar a conversão
 
 A **série 433 (IPCA)** retorna taxa mensal em %.
 - Endpoint `/ultimos/N` retorna **400 Bad Request** — usar `_fetch_serie()` com range de datas
-- Endpoint correto: `/dados?formato=json&dataInicial=DD/MM/YYYY&dataFinal=DD/MM/YYYY`
-
-```python
-# ✅ Correto — CDI diário
-daily_cdi = taxa_diaria_pct / 100.0   # 0.055131 / 100 = 0.00055131
-fator_dia = 1.0 + daily_cdi * (pct_cdi / 100.0)
-
-# ❌ Errado — dobra a conversão
-daily_cdi = (1 + taxa/100) ** (1/252) - 1   # NÃO FAZER
-```
 
 #### `market_data/resolver.py` — Resolução de tipos de ativo
 
-Resolve o nome do ativo → tipo de projeção + parâmetros, sem chamar API externa.
-Usa cache SQLite (`resolved_assets`) para persistir resultados entre runs.
-
 **Prioridade das regras (ordem importa):**
 
-1. **CDI %**: `r"(\d+[,.]?\d*)\s*%\s*(?:DO\s+)?(?:CDI|DI)\b"` — cobre "92,00% CDI", "100% do CDI"
+1. **CDI %**: `r"(\d+[,.]?\d*)\s*%\s*(?:DO\s+)?(?:CDI|DI)\b"` — "92,00% CDI", "100% do CDI"
 2. **IPCA+**: `r"IPC(?:-?A)?\s*\+\s*([\d,]+)%"` — **crítico**: `(?:-?A)?` cobre AMBOS "IPC-A +" e "IPCA +"
-3. **CDI+spread**: `r"(?:CDI|DI)\s*\+\s*([\d,]+)%"` — cobre "CDI + 0,50%"
+3. **CDI+spread**: `r"(?:CDI|DI)\s*\+\s*([\d,]+)%"` — "CDI + 0,50%"
 4. **Fundo** (por nome): `r"\b(?:FIC|FIF|FIDC|FIA|FIRF|FICF|FUNDO|FUND|FIAGRO|FIP|CI)\b"` — "CI" = Capital Investimento
-5. **Ticker B3**: `r"\b([A-Z]{4}\d{1,2})\b"` — cobre ações e FIIs
+5. **Ticker B3**: `r"\b([A-Z]{4}\d{1,2})\b"` — ações e FIIs
 6. **Prefixado** (final da string): `r"[-–]\s*(\d{1,2}[,.]?\d+)%(?:\s*a\.?a\.?)?\s*$"` — "- 12,25%"
 
-**Resultado de cobertura em produção (Jose Mestrener, 26 ativos):**
-- `fundo_cota`: 15 (58%) — ex: V8 Mercury CI, SPX Seahawk, Sparta Max
-- `ipca_spread`: 7 (27%) — ex: CDB XP IPCA+10.20%, NTN-B IPCA+6.25%
-- `prefixado`: 3 (12%) — ex: CDB FACTA 12.25%, CRA UNIDAS 13.70%
-- `cdi_pct`: 1 (4%) — LCD BRDE 92% CDI
+**Cobertura validada (Jose Mestrener, 26 ativos, XP 3245269):**
+- `fundo_cota`: 15 (58%)
+- `ipca_spread`: 7 (27%)
+- `prefixado`: 3 (12%)
+- `cdi_pct`: 1 (4%)
 - **Total: 100% cobertura** (sem CVM fuzzy match)
 
-**Para adicionar novos padrões de ativo:** Inserir na função `_resolve_by_regex()` antes do `return None`, na posição correta de prioridade. Sempre testar contra os ativos reais dos dois clientes.
+#### `market_data/cvm_funds.py`
 
-#### `market_data/cvm_funds.py` — Cotas e CNPJ de fundos
-
-**Cadastral CVM:**
-- URL: `https://dados.cvm.gov.br/dados/FI/CAD/DADOS/registro_classe.csv`
+- Cadastral: `https://dados.cvm.gov.br/dados/FI/CAD/DADOS/registro_classe.csv`
 - Salvo em: `data/market_data/cvm_cadastral_cache.csv`
-- Refresh automático se > 7 dias (via `ensure_cadastral_cache()`)
-- Filtrar por `Situacao == "EM FUNCIONAMENTO NORMAL"` (~80k de 300k linhas)
-- Requer `rapidfuzz` instalado — sem ele, fuzzy match é desabilitado
+- Refresh automático se > 7 dias
+- Fuzzy match: `rapidfuzz.fuzz.WRatio`; score ≥ 85 = alta, 70–84 = média, < 70 = rejeitado
 
-**Fuzzy match:** `rapidfuzz.fuzz.WRatio` entre nome normalizado do PDF e `Denominacao_Social` da CVM
-- Score ≥ 85 → `confianca = "alta"` + CNPJ aceito
-- Score 70-84 → `confianca = "media"` + CNPJ aceito com aviso
-- Score < 70 → CNPJ rejeitado, `tipo_projecao = "fundo_cota"` sem CNPJ
+#### `market_data/rv_prices.py`
 
-**Cotas diárias (inf_diario):**
-- URL: `https://dados.cvm.gov.br/dados/FI/DOC/INF_DIARIO/DADOS/inf_diario_fi_YYYYMM.zip`
-- ZIP com CSV, ~10MB comprimido por mês
-- Latência D+1 (~10h do dia seguinte)
-- FIIs: preferir preço B3 via brapi (mais atualizado) em vez de cota CVM
+- brapi.dev primary, yfinance (`.SA` suffix) fallback
+- Cache em `precos_rv` SQLite
 
-#### `market_data/rv_prices.py` — Preços RV
-
-- **brapi.dev**: endpoint `https://brapi.dev/api/quote/{ticker}` — token via `BRAPI_TOKEN` env var
-- **yfinance fallback**: `yf.Ticker("{ticker}.SA")` — sufixo `.SA` obrigatório para ativos B3
-- Preço atual: tentativa brapi → fallback yfinance
-- Preço histórico: tentativa brapi com `range=1mo` → fallback yfinance com `history()`
-- Cache em `precos_rv` com data de fechamento
-
-#### `enricher.py` — Orquestrador de enriquecimento
-
-```python
-from enricher import enrich_portfolio, salvar_posicoes, carregar_posicoes
-
-# Enriquecer um relatório
-enriched = enrich_portfolio(relatorio_json, use_cvm=True)
-
-# Salvar para uso futuro (âncora persistida)
-caminho = salvar_posicoes(enriched, "jose mestrener")
-
-# Recarregar em outra sessão
-enriched = carregar_posicoes("jose mestrener")
-```
-
-**Posições salvas em:** `data/posicoes/<cliente>_posicoes.json`
-
-**Importante:** `use_cvm=True` ativa o fuzzy match contra o cadastral CVM (necessário para obter CNPJ de fundos). A primeira execução baixa ~50MB do cadastral.
-
-#### `projector.py` — Cálculo das projeções
-
-```python
-from projector import project_portfolio
-
-resultado = project_portfolio(relatorio_enriquecido, data_hoje=date(2026, 3, 14))
-proj = resultado["projecao_d0"]
-# proj["pl_ancora"], proj["pl_estimado"], proj["variacao_pct"], ...
-```
-
-**Fórmulas implementadas:**
-
-| Tipo | Fórmula | Dados necessários |
-|------|---------|------------------|
-| `cdi_pct` | `VA × ∏(1 + cdi_dia × pct/100)` para cada dia útil | BACEN série 12 |
-| `cdi_spread` | `VA × ∏(1 + cdi_dia + spread_diario)` | BACEN série 12 |
-| `ipca_spread` | `VA × fator_ipca × (1+spread)^(du/252)` | BACEN série 433 |
-| `prefixado` | `VA × (1+taxa)^(du/252)` | Sem API |
-| `fundo_cota` | `VA / cota_ancora × cota_hoje` | CVM inf_diario |
-| `rv_preco` | `VA / preco_ancora × preco_hoje` | brapi/yfinance |
-| `caixa` | Não projetar | — |
-| `sem_projecao` | Exibir âncora | — |
-
-**Calendário de dias úteis:**
-- Tenta `bizdays.Calendar.load("ANBIMA")` com feriados corretos
-- Fallback: Seg-Sex sem feriados (leve subestimação em semanas com feriados)
-
-**Campo `_proj_resultado` adicionado a cada ativo:**
-```json
-{
-  "saldo_projetado": 54526.80,
-  "variacao_rs": 626.85,
-  "variacao_pct": 1.1629,
-  "metodo": "ipca_spread",
-  "detalhe": "IPCA + 10.20%",
-  "confianca": "alta"
-}
-```
-
-### 17.3 Integração com app.py
-
-A seção "Posições Estimadas D0" é um `st.expander()` no dashboard, aparece após download do Excel. Não bloqueia o fluxo principal.
-
-```python
-# Fluxo no app.py:
-relatorios, hist, erros = _processar_arquivos(uploaded_files)
-dados = consolidate(reports=relatorios, ...)
-generate_report(dados, excel_path)
-
-st.session_state["relatorios_individuais"] = relatorios  # ← novo
-
-# No dashboard:
-_posicoes_d0_section(relatorios_individuais)
-# → chama enrich_portfolio() + project_portfolio() internamente
-```
-
-**Import lazy para não bloquear o app se dependências não estiverem instaladas:**
-```python
-def _import_projecao():
-    try:
-        from enricher import enrich_portfolio
-        from projector import project_portfolio
-        return enrich_portfolio, project_portfolio
-    except Exception:
-        return None, None
-```
-
-### 17.4 Resultados validados em produção
-
-**Base:** Jose Mestrener / XP 3245269 / âncora 2026-01-30 / projeção 2026-03-14 (30 dias úteis)
-
-| Ativo | Tipo | Variação | Esperado |
-|-------|------|---------|---------|
-| LCD BRDE 92% CDI | cdi_pct | +1,53% | 30du × 0,0507%/du ≈ 1,53% ✅ |
-| CDB XP IPCA+10,20% | ipca_spread | +1,94% | IPCA~1,03% + spread~1,21% ≈ 2,2% ✓ |
-| CDB FACTA 12,25% a.a. | prefixado | +1,39% | (1,1225)^(30/252) = 1,0138 ✅ |
-| CDB Paraná 14,20% a.a. | prefixado | +1,59% | (1,1420)^(30/252) = 1,0159 ✅ |
-| CRA UNIDAS 13,70% a.a. | prefixado | +1,54% | (1,1370)^(30/252) = 1,0155 ✅ |
-
-**PL total âncora:** R$ 1.808.182 → **Estimativa D0:** R$ 1.816.993 (+R$ 8.811 / +0,49%)
-
-### 17.5 Dependências novas (pós 2026-03-14)
+### 17.5 Dependências (pós 2026-03-14)
 
 ```
 rapidfuzz>=3.6.0    # fuzzy match nome → CNPJ CVM
 bizdays>=0.3.12     # calendário ANBIMA (opcional — tem fallback)
 yfinance>=0.2.36    # preços RV fallback
-requests>=2.31.0    # já existia — APIs BACEN, CVM, brapi
+requests>=2.31.0    # APIs BACEN, CVM, brapi
 ```
-
-Instalar: `pip install rapidfuzz bizdays yfinance`
 
 ### 17.6 Boas práticas de manutenção
 
-1. **Nunca modificar a fórmula CDI sem ler a seção 17.2** — a série 12 já retorna taxa diária
-2. **`override_manual = 1` no SQLite** — ao corrigir manualmente um CNPJ no banco, setar este campo para proteger da próxima re-resolução
-3. **Adicionar novos padrões de ativo** em `resolver.py::_resolve_by_regex()` na posição correta (CDI tem precedência sobre IPCA+ que tem precedência sobre PRE)
-4. **Testar sempre nos 26 ativos reais** do xp_3245269_v3.json antes de commitar mudanças no resolver
-5. **Cache SQLite** está em `data/market_data/market_cache.db` — não commitar no git (está no .gitignore implícito via `data/`)
-6. **Atualizar cadastral CVM** é automático (>7 dias) — se forçar, chamar `ensure_cadastral_cache(force=True)`
-7. **Projeção de fundos** só funciona se CNPJ estiver mapeado — o fuzzy match CVM automaticamente faz isso se `use_cvm=True`
-
-### 17.7 O que falta para cobertura completa de fundos
-
-Os 15 fundos classificados como `fundo_cota` precisam de CNPJ para projeção. Próximos passos:
-1. Rodar `enrich_portfolio(relatorio, use_cvm=True)` — download do cadastral CVM (~50MB)
-2. Verificar os matches no SQLite (`resolved_assets` onde `tipo_projecao='fundo_cota'`)
-3. Para matches com `confianca='baixa'`, corrigir manualmente o CNPJ e setar `override_manual=1`
-4. Após correto, `fetch_fund_nav()` busca as cotas automaticamente da CVM
+1. **Nunca modificar a fórmula CDI sem ler 17.4** — série 12 já retorna taxa diária
+2. **`override_manual = 1` no SQLite** — ao corrigir manualmente um CNPJ, setar este campo
+3. **Adicionar novos padrões de ativo** em `resolver.py::_resolve_by_regex()` na posição correta de prioridade
+4. **Testar sempre nos 26 ativos reais** do `xp_3245269_v3.json`
+5. **Cache SQLite** está em `data/market_data/market_cache.db` — não commitar (está no .gitignore via `data/`)
 
 ---
 

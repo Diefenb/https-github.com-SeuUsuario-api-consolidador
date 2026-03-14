@@ -1,12 +1,12 @@
 # CLAUDE.md — Projeto Consolidador v3
 
 ## O que é este projeto
-Sistema de consolidação de carteiras de investimentos para assessores financeiros brasileiros. Processa relatórios PDF de corretoras (XP, BTG/API Capital), extrai dados via parsers determinísticos, normaliza, consolida múltiplas contas, e gera relatórios Excel. Interface web via Streamlit.
+Sistema de consolidação de carteiras de investimentos para assessores financeiros brasileiros. Processa relatórios PDF de corretoras (XP, BTG/API Capital), extrai dados via parsers determinísticos, normaliza, consolida múltiplas contas, e gera relatórios Excel. Interface web via Streamlit com gráfico de rentabilidade histórica dia-a-dia.
 
 ## Regra fundamental
 **SOMENTE DADOS REAIS.** Todo número no relatório final deve ter origem rastreável em um PDF de corretora ou arquivo de importação. Zero cálculos implícitos de rentabilidade. Zero estimativas. Campo sem dados = null. O relatório da corretora é soberano.
 
-> **Exceção declarada:** O módulo pro-rata-die (`enricher.py`, `projector.py`, `market_data/`) projeta posições para D0 usando taxas de mercado reais. É sempre rotulado como "Estimativa" na UI e nunca sobrescreve dados do relatório oficial.
+> **Exceção declarada:** O módulo de reconstrução histórica (`historico.py`) usa interpolação geométrica intra-mês entre âncoras reais mensais do relatório. Apenas os valores intermediários dentro de cada mês são estimados; os pontos de início e fim de mês são dados reais.
 
 ## Arquitetura
 
@@ -16,10 +16,9 @@ XP PDF  ──→ Parser Determinístico ──→ JSON canônico ─┐
 BTG PDF ──→ Parser Determinístico ──→ JSON canônico ─┤──→ Consolidador ──→ Excel
 JSON/XLSX importado manualmente ────────────────────┘
 
-FLUXO PRO-RATA-DIE (novo — atualização diária sem PDF):
-JSON canônico ──→ Enricher ──→ Projector ──→ Saldo estimado D0 (rotulado)
-                 (resolver    (taxas BACEN
-                  + CVM)       CVM, brapi)
+FLUXO HISTÓRICO DIÁRIO (gráfico de rentabilidade):
+dados["evolucao_por_conta"] ──→ historico.reconstruct_daily() ──→ série diária [data, pl, rent_dia, acum]
+(âncoras mensais reais da corretora)  (interpolação geométrica intra-mês)
 
 FLUXO EXCEÇÃO (com IA, sob demanda, ~R$0,50-1,50):
 PDF de corretora nova ──→ Claude API ──→ JSON canônico ──→ entra no fluxo principal
@@ -34,7 +33,7 @@ Consolidador/
 ├── CLAUDE.md                          ← este arquivo (leia SEMPRE ao iniciar)
 ├── .env                               ← ANTHROPIC_API_KEY (só para fluxo exceção)
 ├── requirements.txt                   ← inclui rapidfuzz, bizdays, yfinance (pós 2026-03-14)
-├── app.py                             ← Streamlit web app (~955 linhas, UI v2 + seção D0)
+├── app.py                             ← Streamlit web app (~1100 linhas, UI v2 + histórico diário ✅)
 ├── consolidar.py                      ← CLI alternativo
 ├── config/prompts/                    ← Prompts IA (só para fluxo exceção)
 │   ├── xp_performance.txt
@@ -52,8 +51,9 @@ Consolidador/
 │   │   ├── cvm_funds.py               ← cotas fundos CVM + cadastral + fuzzy match CNPJ
 │   │   ├── rv_prices.py               ← preços ações/FIIs: brapi.dev + yfinance fallback
 │   │   └── resolver.py                ← nome do ativo → tipo_projecao + parâmetros (sem rede)
-│   ├── enricher.py                    ← NOVO — orquestra resolver + persiste JSON enriquecido
-│   ├── projector.py                   ← NOVO — cálculo pro-rata-die para D0
+│   ├── historico.py                   ← NOVO — reconstrução diária (interpolação geométrica entre âncoras mensais)
+│   ├── enricher.py                    ← orquestra resolução de tipo de ativo + persiste JSON
+│   ├── projector.py                   ← fórmulas de projeção (CDI, IPCA, prefixado, fundo, RV)
 │   ├── extractor.py                   ← Extração via IA (SÓ EXCEÇÕES)
 │   ├── normalizer.py                  ← SOMENTE: normalize_strategy() + clean_asset_name()
 │   ├── consolidator.py                ← Agregação entre contas (estratégia + corretora)
@@ -192,11 +192,17 @@ Lista unificada, ordenada por data (mais recente primeiro).
 - Auto-detecção de formato (XP/BTG/Importação/Desconhecido)
 - Para formato desconhecido: oferecer extração IA (com aviso de custo) ou template manual
 
-### Tela 2: Resultado
-- Resumo por conta (corretora, patrimônio, ativos)
-- Patrimônio total consolidado
-- Preview das abas do Excel
-- Botão download do Excel
+### Tela 2: Resultado (Dashboard)
+- 4 cards: PL total, contas processadas, total de ativos, data de referência
+- Gráfico evolução patrimonial (mensal, linha com área)
+- Gráfico rentabilidade mês a mês (barras, últimos 6 meses)
+- Tabela: Patrimônio por conta | Alocação por estratégia
+- Botão download Excel
+- **Seção "Rentabilidade Diária — Histórico Consolidado":**
+  - Métricas: PL Final, Rent. Acumulada (%), Ganho Total (R$), Dias Úteis
+  - Aba "Patrimônio Líquido (R$)": linha azul com área, hover com detalhes
+  - Aba "Rentabilidade Acumulada (%)": linha verde/vermelha, baseline zero tracejado
+  - Expander "Detalhamento Diário": tabela com Data | PL (R$) | Var.Dia (R$) | Var.Dia (%) | Acumulado (%)
 
 ### Deploy: Streamlit Community Cloud (gratuito)
 
@@ -222,13 +228,33 @@ Lista unificada, ordenada por data (mais recente primeiro).
 | "V8 Mercury CI" sem projeção | "CI" não estava no padrão de fundos | Adicionar `CI` ao `_FUND_PATTERN` |
 | IPCA+ classificado como prefixado | Regex `IPC[A-]?` não captura "IPC-A" | Regex corrigido: `IPC(?:-?A)?` |
 
-## Módulo de Projeção Pro-Rata-Die (market_data/ + enricher + projector)
+## Módulo de Rentabilidade Histórica Diária (`historico.py`)
 
-> Implementado em 2026-03-14. Projeta posições para D0 sem necessidade de novo PDF.
+> Implementado em 2026-03-14. Reconstrói o valor diário histórico do portfólio a partir das âncoras mensais reais do relatório da corretora.
 
 ### Conceito
 
-Usar o saldo do último relatório como âncora confiável (já inclui histórico, IR, IOF, movimentações) e projetar apenas os dias desde o relatório até hoje com taxas de mercado reais.
+Os relatórios da corretora fornecem `patrimonio_inicial` e `patrimonio_final` de cada mês. O módulo usa esses pontos como âncoras e distribui o rendimento intra-mês via interpolação geométrica, gerando uma série diária suave que:
+- Termina exatamente no `patrimonio_final` de cada mês (dado real)
+- Mostra a progressão dia a dia do portfólio consolidado
+- Permite plotar um gráfico de rentabilidade com granularidade diária
+
+### `historico.reconstruct_daily(evolucao_por_conta)`
+
+```python
+from historico import reconstruct_daily
+registros = reconstruct_daily(dados["evolucao_por_conta"])
+# [{"data": "YYYY-MM-DD", "pl": float, "rent_dia_rs": float,
+#   "rent_dia_pct": float, "rent_acum_pct": float}, ...]
+```
+
+**Fórmula:** `taxa_diaria = (pf/p0)^(1/n) - 1` → PL_d = P0 × (1 + taxa)^d
+
+**Validado:** XP 3245269, Nov/25→Jan/26 → 65 dias úteis, último dia = R$1.826.076,84 (exato).
+
+### Infraestrutura `market_data/` — dados de mercado
+
+Os módulos abaixo foram construídos para alimentar projeções e podem futuramente ser integrados ao histórico para shape CDI real intra-mês.
 
 ### Fato crítico — BACEN série 12
 
@@ -236,18 +262,7 @@ Usar o saldo do último relatório como âncora confiável (já inclui históric
 - Valor `0.055131` = 0,055131% ao dia ≈ 14,9% a.a.
 - Uso correto: `daily_rate = valor / 100.0`
 - **NÃO** aplicar `(1 + taxa/100)^(1/252)` — seria dobrar a conversão
-
-### Tipos de projeção e fórmulas
-
-| tipo_projecao | Fórmula | Fonte dos dados |
-|---------------|---------|----------------|
-| `cdi_pct` | `VA × ∏(1 + cdi_dia × pct/100)` por dia útil | BACEN série 12 |
-| `cdi_spread` | `VA × ∏(1 + cdi_dia + spread_diario)` | BACEN série 12 |
-| `ipca_spread` | `VA × fator_ipca × (1+spread)^(du/252)` | BACEN série 433 |
-| `prefixado` | `VA × (1+taxa)^(du/252)` | Sem API |
-| `fundo_cota` | `VA / cota_ancora × cota_hoje` | CVM inf_diario |
-| `rv_preco` | `VA / preco_ancora × preco_hoje` | brapi.dev / yfinance |
-| `sem_projecao` | Exibir âncora | — |
+- Série 433 (IPCA): endpoint `/ultimos/N` retorna 400 — usar range de datas explícitas
 
 ### Resolver — prioridade das regras (ordem importa)
 
@@ -258,10 +273,7 @@ Usar o saldo do último relatório como âncora confiável (já inclui históric
 5. Ticker B3: `r"\b([A-Z]{4}\d{1,2})\b"` — ações e FIIs
 6. Prefixado (fim da string): `r"[-–]\s*(\d{1,2}[,.]?\d+)%(?:\s*a\.?a\.?)?\s*$"` — "- 12,25%"
 
-### Cobertura validada em produção
-
-Jose Mestrener / XP 3245269 / 26 ativos → **100% cobertura** sem CVM:
-- 15 fundos (fundo_cota), 7 IPCA+ (ipca_spread), 3 prefixados, 1 CDI%
+**Cobertura validada (Jose Mestrener, 26 ativos):** 100% sem CVM — 15 fundos, 7 IPCA+, 3 prefixados, 1 CDI%.
 
 ### Cache SQLite (`data/market_data/market_cache.db`)
 
@@ -281,17 +293,18 @@ Jose Mestrener / XP 3245269 / 26 ativos → **100% cobertura** sem CVM:
 9. 23 categorias de fundos implementadas e removidas — não reimplementar sem pedido
 10. **IA é ferramenta de exceção** — fluxo principal usa parsers determinísticos (custo zero)
 11. **Streamlit Community Cloud** como plataforma de deploy (gratuito)
-12. **Projeção D0 é estimativa declarada** — nunca exibir como dado real, sempre rotular
+12. **Projeção D0 removida da UI** — substituída por reconstrução histórica dia-a-dia (`historico.py`)
 13. **BACEN série 12 = taxa DIÁRIA** — não converter de anual para diária (já é diária)
 14. **Resolver persiste no SQLite** — `override_manual=1` protege correções manuais
+15. **Histórico diário usa âncoras mensais reais** — interpolação geométrica apenas intra-mês
 
 ## Clientes processados
 
 | Cliente | Contas | Patrimônio Total | Ativos | Status |
 |---------|--------|-----------------|--------|--------|
-| Jose Mestrener | XP 3245269, XP 8660669, BTG 4016217, BTG 4019474 | R$ 4.902.064,78 | 100 | ✅ Extraído, consolidado, projeção D0 testada |
+| Jose Mestrener | XP 3245269, XP 8660669, BTG 4016217, BTG 4019474 | R$ 4.902.064,78 | 100 | ✅ Extraído, consolidado, histórico diário ✅ |
 | Cid e Tania | XP 14522738, XP 3476739, BTG 5058054, BTG 5165904 | (a validar) | (a validar) | ✅ Extraído via IA |
 
 ## Fase atual
-**Fase 2 completa:** Parsers XP e BTG funcionais + UI v2 + módulo pro-rata-die implementado.
-Próximo: popular CNPJs de fundos via CVM fuzzy match (`use_cvm=True`) para cobertura 100% na projeção.
+**Fase 3 completa:** Parsers XP e BTG + UI v2 + gráfico de rentabilidade diária histórica implementado.
+Próximo: popular CNPJs de fundos via CVM fuzzy match para cobertura 100% no resolver.
