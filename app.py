@@ -8,7 +8,7 @@ import sys
 import tempfile
 import traceback
 from collections import defaultdict
-from datetime import datetime, date
+from datetime import datetime
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -22,16 +22,6 @@ from importer import import_manual_json
 from normalizer import normalize
 from parsers import UnknownFormatError, detect_and_parse
 from report_generator import generate_report
-
-# ── Módulos de projeção (importação lazy para não bloquear o app) ─────────────
-def _import_projecao():
-    try:
-        from enricher import enrich_portfolio
-        from projector import project_portfolio
-        return enrich_portfolio, project_portfolio
-    except Exception as e:
-        return None, None
-
 
 # =============================================================================
 # DESIGN TOKENS
@@ -319,25 +309,6 @@ div[data-testid="stAlert"] {{ border-radius: 8px; font-size: 14px; }}
 /* ── Padding superior ── */
 div[data-testid="stAppViewContainer"] > section > div:first-child {{ padding-top: 1.5rem; }}
 
-/* ── Projeção D0 ── */
-.proj-aviso {{
-    background: #FEF9C3;
-    border: 1px solid #FDE047;
-    border-radius: 8px;
-    padding: 10px 14px;
-    font-size: 13px;
-    color: #713F12;
-    margin-bottom: 16px;
-}}
-.proj-ancora {{
-    font-size: 12px;
-    color: {_C['text_sub']};
-    margin-bottom: 8px;
-}}
-.badge-proj-alta   {{ background: #DCFCE7; color: #166534; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }}
-.badge-proj-media  {{ background: #FEF9C3; color: #713F12; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }}
-.badge-proj-baixa  {{ background: #FEE2E2; color: #991B1B; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }}
-.badge-proj-sem    {{ background: #F1F5F9; color: #475569; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }}
 </style>
 """
 
@@ -834,7 +805,6 @@ def _view_upload():
                         excel_bytes = f.read()
 
                     st.session_state["dados_consolidados"] = dados
-                    st.session_state["relatorios_individuais"] = relatorios
                     st.session_state["excel_bytes"]        = excel_bytes
                     st.session_state["excel_filename"]     = (
                         f"Consolidado_{(cliente_nome or '').strip().replace(' ', '_')}.xlsx"
@@ -869,158 +839,6 @@ def _view_upload():
                 "Patrimônio": st.column_config.NumberColumn("Patrimônio (R$)", format="R$ %.2f"),
             },
         )
-
-
-# =============================================================================
-# VIEW: POSIÇÕES D0 (Projeção Pro-Rata-Die)
-# =============================================================================
-
-def _posicoes_d0_section(relatorios: list[dict]):
-    """
-    Seção expansível no dashboard que exibe posições projetadas para D0.
-    Recebe a lista de relatórios normalizados (pré-consolidação).
-    """
-    with st.expander("Posições Estimadas D0 (Pro-Rata-Die)", expanded=False):
-        st.markdown(
-            '<div class="proj-aviso">'
-            '<b>Estimativa</b> — valores projetados com base em taxas de mercado. '
-            'Não substitui o relatório oficial da corretora. '
-            'Valores brutos (sem considerar IR/IOF no resgate).'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-
-        enrich_fn, project_fn = _import_projecao()
-        if enrich_fn is None:
-            st.warning("Módulos de projeção não disponíveis. Verifique a instalação de `rapidfuzz`, `bizdays` e `yfinance`.")
-            return
-
-        data_hoje = date.today()
-        todos_projetados = []
-
-        for rel in relatorios:
-            data_ancora_str = rel.get("meta", {}).get("data_referencia", "")
-            if not data_ancora_str:
-                continue
-
-            with st.spinner(f"Projetando {rel.get('meta', {}).get('corretora', '?')} {rel.get('meta', {}).get('conta', '?')}…"):
-                try:
-                    enriched = enrich_fn(rel, use_cvm=True)
-                    projected = project_fn(enriched, data_hoje=data_hoje)
-                    todos_projetados.append(projected)
-                except Exception as e:
-                    st.warning(f"Erro ao projetar conta {rel.get('meta', {}).get('conta', '?')}: {e}")
-                    continue
-
-        if not todos_projetados:
-            st.info("Nenhuma projeção disponível.")
-            return
-
-        # Agregar PL total
-        pl_ancora_total = sum(p.get("projecao_d0", {}).get("pl_ancora", 0) or 0 for p in todos_projetados)
-        pl_estimado_total = sum(p.get("projecao_d0", {}).get("pl_estimado", 0) or 0 for p in todos_projetados)
-        var_rs = pl_estimado_total - pl_ancora_total
-        var_pct = (pl_estimado_total / pl_ancora_total - 1) * 100 if pl_ancora_total > 0 else 0.0
-
-        # Cards de resumo
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.metric("PL Estimado Hoje", _brl(pl_estimado_total))
-        with c2:
-            st.metric("PL Âncora (último rel.)", _brl(pl_ancora_total))
-        with c3:
-            sinal = "+" if var_rs >= 0 else ""
-            st.metric("Variação (R$)", f"{sinal}{_brl(var_rs).replace('R$ ', '')}", delta=None)
-        with c4:
-            sinal = "+" if var_pct >= 0 else ""
-            st.metric("Variação (%)", f"{sinal}{var_pct:.2f}%".replace(".", ","))
-
-        # Data da âncora mais antiga
-        datas_ancora = [
-            p.get("projecao_d0", {}).get("data_ancora", "")
-            for p in todos_projetados
-            if p.get("projecao_d0", {}).get("data_ancora")
-        ]
-        if datas_ancora:
-            data_ancora_ref = min(datas_ancora)
-            try:
-                d_anc = date.fromisoformat(data_ancora_ref)
-                du = sum(p.get("projecao_d0", {}).get("dias_uteis_projetados", 0) or 0 for p in todos_projetados)
-                du_med = du // len(todos_projetados) if todos_projetados else 0
-                st.markdown(
-                    f'<div class="proj-ancora">'
-                    f'Âncora: <b>{d_anc.strftime("%d/%m/%Y")}</b> — '
-                    f'Projeção: <b>{data_hoje.strftime("%d/%m/%Y")}</b> — '
-                    f'~{du_med} dias úteis projetados'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-            except Exception:
-                pass
-
-        # Tabela de ativos projetados
-        rows = []
-        for projected in todos_projetados:
-            meta = projected.get("meta", {})
-            corretora = meta.get("corretora", "?")
-            conta = meta.get("conta", "?")
-
-            for ativo in projected.get("ativos", []):
-                res = ativo.get("_proj_resultado", {})
-                projecao_meta = ativo.get("_projecao", {})
-
-                saldo_anc = ativo.get("saldo_bruto", 0) or 0
-                saldo_proj = res.get("saldo_projetado")
-                var_r = res.get("variacao_rs")
-                var_p = res.get("variacao_pct")
-                confianca = res.get("confianca", "nenhuma")
-                metodo = res.get("metodo", "sem_projecao")
-                detalhe = res.get("detalhe", "")
-
-                badge = {
-                    "alta": "Alta",
-                    "media": "Média",
-                    "baixa": "Baixa",
-                    "nenhuma": "—",
-                }.get(confianca, "—")
-
-                rows.append({
-                    "Corretora": corretora,
-                    "Conta": conta,
-                    "Estratégia": ativo.get("estrategia", ""),
-                    "Ativo": ativo.get("nome_original", ""),
-                    "Âncora (R$)": saldo_anc,
-                    "Estimativa D0 (R$)": saldo_proj if saldo_proj is not None else saldo_anc,
-                    "Var. (R$)": var_r,
-                    "Var. (%)": var_p,
-                    "Método": metodo,
-                    "Confiança": badge,
-                })
-
-        if rows:
-            df = pd.DataFrame(rows)
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Âncora (R$)": st.column_config.NumberColumn("Âncora (R$)", format="R$ %.2f"),
-                    "Estimativa D0 (R$)": st.column_config.NumberColumn("Estimativa D0 (R$)", format="R$ %.2f"),
-                    "Var. (R$)": st.column_config.NumberColumn("Var. (R$)", format="R$ %.2f"),
-                    "Var. (%)": st.column_config.NumberColumn("Var. (%)", format="%.4f%%"),
-                },
-            )
-
-            # Cobertura
-            n_total = len(rows)
-            n_proj = sum(1 for r in rows if r["Método"] != "sem_projecao")
-            n_sem = n_total - n_proj
-            cob_pct = n_proj / n_total * 100 if n_total else 0
-
-            st.markdown(
-                f"**Cobertura:** {n_proj}/{n_total} ativos com projeção ({cob_pct:.0f}%) — "
-                f"{n_sem} exibidos com saldo âncora",
-            )
 
 
 # =============================================================================
@@ -1083,19 +901,13 @@ def _view_dashboard():
             _reset_state()
             st.rerun()
 
-    # ── Projeção D0 ───────────────────────────────────────────────────────────
-    relatorios_ind = st.session_state.get("relatorios_individuais") or []
-    if relatorios_ind:
-        st.markdown("")
-        _posicoes_d0_section(relatorios_ind)
-
 
 # =============================================================================
 # UTILITÁRIOS DE ESTADO
 # =============================================================================
 
 def _reset_state():
-    for k in ("dados_consolidados", "excel_bytes", "excel_filename", "relatorios_individuais"):
+    for k in ("dados_consolidados", "excel_bytes", "excel_filename"):
         st.session_state[k] = None
     for k in ("historico", "erros_sessao"):
         st.session_state[k] = []
@@ -1106,7 +918,6 @@ def _init_state():
     defaults = {
         "view":                    "upload",
         "dados_consolidados":      None,
-        "relatorios_individuais":  None,
         "excel_bytes":             None,
         "excel_filename":          "Consolidado.xlsx",
         "cliente_nome":            "",
